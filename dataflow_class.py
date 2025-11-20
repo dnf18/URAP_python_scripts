@@ -1,54 +1,36 @@
-#!/usr/bin/env python3
-
 import os
 import json
 import subprocess
+import numpy as np
 from pathlib import Path
 
 
 class DataFlow:
     def __init__(self, json_path: str):
 
-        """
-        Initialize DataFlow with a path to a steering_config.json file.
-        Loads all necessary simulation parameters from the JSON.
-        """
-
         self.json_path = Path(json_path)
-
         if not self.json_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {self.json_path}")
 
+        # load config
         with open(self.json_path, "r") as f:
             self.config = json.load(f)
 
-        # Extract everything we need
+        # extract fields
         self.cosima_file = self.config["cosima_file"]
         self.geometry_file = self.config["geometry_file"]
         self.revan_cfg = self.config["revan_output"]
         self.mimrec_cfg = self.config["mimrec_output"]
-        self.energy_cut = self.config.get("energy_cut", [10,2000])
+        self.energy_cut = self.config.get("energy_cut", [10, 2000])
         self.max_events = self.config.get("max_events", 100000)
 
-        # directory of THIS run
+        # directory for this run
         self.dir = self.json_path.parent
 
-        # where ALL output files go (per run)
+        # output directory
         self.output_dir = self.dir / "results"
-        os.makedirs(self.output_dir, exist_ok=True)
+        self.output_dir.mkdir(exist_ok=True)
 
-        # keep static copies inside /home/linusb/algo
-        algo_dir = Path("/home/linusb/algo")
-        for fpath in [self.cosima_file, self.geometry_file, self.revan_cfg, self.mimrec_cfg]:
-            fpath = Path(fpath)
-            if fpath.exists():
-                dest = algo_dir / fpath.name
-                if not dest.exists():
-                    os.system(f"cp {fpath} {dest}")
-
-
-    # --------------------------------------------------------------
-    # Utility for running commands
     # --------------------------------------------------------------
 
     def run_command(self, cmd):
@@ -61,20 +43,14 @@ class DataFlow:
         process.wait()
 
         if process.returncode != 0:
-            raise RuntimeError(f"Command failed with exit code {process.returncode}")
+            raise RuntimeError(f"Command failed: {' '.join(cmd)}")
 
-
-    # --------------------------------------------------------------
-    # Step 1: cosima
     # --------------------------------------------------------------
 
     def run_simulation(self):
         print("==== Step 1: Simulation ====")
         self.run_command(["cosima", self.cosima_file])
 
-
-    # --------------------------------------------------------------
-    # Step 2: revan
     # --------------------------------------------------------------
 
     def run_reconstruction(self):
@@ -82,9 +58,6 @@ class DataFlow:
 
         base = os.path.splitext(self.cosima_file)[0]
         sim_file = base + ".inc1.id1.sim.gz"
-
-        if not os.path.exists(sim_file):
-            print(f"Warning: Simulation file '{sim_file}' not found after cosima step.")
 
         self.run_command([
             "revan",
@@ -94,9 +67,6 @@ class DataFlow:
             "-a", "-n"
         ])
 
-
-    # --------------------------------------------------------------
-    # Step 3: mimrec
     # --------------------------------------------------------------
 
     def run_spectrum(self):
@@ -104,10 +74,6 @@ class DataFlow:
 
         base = os.path.splitext(self.cosima_file)[0]
         tra_file = base + ".inc1.id1.tra.gz"
-
-        if not os.path.exists(tra_file):
-            print(f"Warning: Tracking file '{tra_file}' not found after revan step.")
-
         output_spectrum = self.output_dir / "spectrum.C"
 
         self.run_command([
@@ -119,65 +85,19 @@ class DataFlow:
             "-o", str(output_spectrum)
         ])
 
-
     # --------------------------------------------------------------
-    # NEW: extract energies from .tra.gz so Comparator can use them
-    # --------------------------------------------------------------
-
-    def extract_energy(self):
-        """
-        Reads the .tra.gz file and pulls out all energy values.
-        Writes them into reference_energy.txt or test_energy.txt.
-        """
-
-        base = os.path.splitext(self.cosima_file)[0]
-        tra_file = base + ".inc1.id1.tra.gz"
-
-        # Detect which run this is
-        run_name = "reference_energy.txt" if "run_ref" in str(self.dir) else "test_energy.txt"
-        out_file = self.output_dir / run_name
-
-        energies = []
-
-        # Use zcat to avoid python gzip overhead
-        with os.popen(f"zcat {tra_file}") as f:
-            for line in f:
-                if "E=" in line or "E =" in line:
-                    try:
-                        val = float(line.replace("keV","").split("=")[1])
-                        energies.append(val)
-                    except:
-                        pass
-
-        with open(out_file, "w") as f:
-            for e in energies:
-                f.write(f"{e}\n")
-
-        print(f"Extracted {len(energies)} energies → {out_file}")
-
-
-    # --------------------------------------------------------------
-    # organize results, BUT avoid moving any .source/.cfg/.setup
-    # --------------------------------------------------------------
-
-    def organize_results(self):
-
-        base_prefix = os.path.splitext(os.path.basename(self.cosima_file))[0]
-
-        safe_ext = (".sim.gz", ".tra.gz", ".root", ".C", ".txt", ".dat")
-
-        # Only move files that match the simulation prefix & safe extensions
-        for file in os.listdir('.'):
-            if file.startswith(base_prefix) and file.endswith(safe_ext):
-                os.rename(file, self.output_dir / file)
 
     def extract_energy_list(self):
+        """
+        Reads spectrum.C and extracts energies, saving to {reference,test}_energy.txt
+        """
+
         spectrum_file = self.output_dir / "spectrum.C"
         if not spectrum_file.exists():
             print(f"[DataFlow] No spectrum.C found at {spectrum_file}")
             return
 
-        # determine filename
+        # choose file name
         if "run_ref" in str(self.output_dir):
             out_file = self.output_dir / "reference_energy.txt"
         else:
@@ -189,17 +109,16 @@ class DataFlow:
             for line in f:
                 line = line.strip()
 
-                # type A: Energy[i] = 215.0;
+                # Energy[i] = 215.0;
                 if "Energy" in line and "=" in line:
                     try:
-                        val = float(line.split("=")[1].replace(";", "").strip())
-                        energies.append(val)
+                        energies.append(float(line.split("=")[1].replace(";", "").strip()))
                         continue
                     except:
                         pass
 
-                # type B: hEnergy->Fill(215.0);
-                if "Fill" in line and "(" in line and ")" in line:
+                # hEnergy->Fill(215.0);
+                if "Fill" in line:
                     try:
                         val = float(line.split("(")[1].split(")")[0])
                         energies.append(val)
@@ -207,7 +126,7 @@ class DataFlow:
                     except:
                         pass
 
-                # type C: push_back(215.0)
+                # push_back(215.0)
                 if "push_back" in line:
                     try:
                         val = float(line.split("(")[1].split(")")[0])
@@ -222,8 +141,38 @@ class DataFlow:
 
         print(f"[DataFlow] Extracted {len(energies)} energies → {out_file}")
 
+        return energies
+
     # --------------------------------------------------------------
-    # Full pipeline
+    # NEW: compute histogram (fixes bin mismatch problems)
+    # --------------------------------------------------------------
+
+    def save_histogram(self, energies):
+        """
+        Converts energy list into histogram + bins and saves them:
+        - energy_hist.npy
+        - energy_bins.npy
+        """
+
+        energies = np.array(energies, dtype=float)
+
+        hist, bins = np.histogram(energies, bins=100)
+
+        np.save(self.output_dir / "energy_hist.npy", hist)
+        np.save(self.output_dir / "energy_bins.npy", bins)
+
+        print(f"[DataFlow] Saved histogram + bins in {self.output_dir}")
+
+    # --------------------------------------------------------------
+
+    def organize_results(self):
+        base_prefix = os.path.splitext(os.path.basename(self.cosima_file))[0]
+        safe_ext = (".sim.gz", ".tra.gz", ".root", ".C", ".txt", ".dat")
+
+        for file in os.listdir('.'):
+            if file.startswith(base_prefix) and file.endswith(safe_ext):
+                os.rename(file, self.output_dir / file)
+
     # --------------------------------------------------------------
 
     def run_full_pipeline(self):
@@ -233,4 +182,8 @@ class DataFlow:
         self.run_reconstruction()
         self.run_spectrum()
         self.organize_results()
-        self.extract_energy_list()
+
+        energies = self.extract_energy_list()
+
+        if energies:
+            self.save_histogram(energies)
