@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import json
 import numpy as np
 import matplotlib.pyplot as plt
@@ -78,17 +76,31 @@ class Comparator:
     #  Make overlaid histogram plot
     # ---------------------------------------------------
     def plot_hist(self, ref_vals, test_vals):
-        plt.figure(figsize=(7, 4))
-        plt.hist(ref_vals, bins=40, alpha=0.6, label="Reference")
-        plt.hist(test_vals, bins=40, alpha=0.6, label="Test")
-        plt.xlabel("Counts per bin")
-        plt.ylabel("Bin frequency")
-        plt.title("Energy Spectrum Comparison")
-        plt.legend()
+        plt.figure(figsize=(8, 5))
+
+        bins = np.linspace(0, 2000, 100)  # 100 bins like ROOT
+
+        # Reference spectrum – filled green, thin blue outline
+        plt.hist(ref_vals, bins=bins, histtype='stepfilled', alpha=0.4,
+                label='Reference', color='green')
+        plt.hist(ref_vals, bins=bins, histtype='step',
+                linewidth=1.0, color='blue')
+
+        # Test spectrum – filled, different fill but matching style
+        plt.hist(test_vals, bins=bins, histtype='stepfilled', alpha=0.2,
+                label='Test', color='orange')
+        plt.hist(test_vals, bins=bins, histtype='step',
+                linewidth=1.0, color='darkorange', linestyle='--')
+
+        plt.xlabel("Energy [keV]", fontsize=12)
+        plt.ylabel("Counts / bin", fontsize=12)
+        plt.title("Energy Spectrum Comparison", fontsize=14)
+        plt.legend(fontsize=10)
+        plt.grid(alpha=0.2)
+        plt.tight_layout()
 
         out = self.comp_dir / "energy_comparison.png"
-        plt.tight_layout()
-        plt.savefig(out)
+        plt.savefig(out, dpi=300)      # high resolution
         plt.close()
         return str(out)
 
