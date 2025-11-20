@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import os
 import json
 import smtplib
@@ -48,20 +46,34 @@ class Reporter:
 
         # Configuration Info 
         story.append(Paragraph("<b>Configuration Summary</b>", styles["Heading2"]))
-        config_data = [[k, str(v)] for k, v in self.config.items()]
-        config_table = Table(config_data, colWidths=[150, 350])
-        config_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-        ]))
+        config_data = []
+        for k, v in self.config.items():
+            if isinstance(v, dict):
+                config_data.append([k, ""])  # Title row
+                for subk, subv in v.items():
+                    config_data.append([f"    {subk}", str(subv)])
+            else:
+                config_data.append([k, str(v)])
+            config_table = Table(config_data, colWidths=[150, 350])
+            config_table.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+                ]))
         story.append(config_table)
         story.append(Spacer(1, 12))
 
         # Results Summary 
         story.append(Paragraph("<b>Validation Results</b>", styles["Heading2"]))
-        result_data = [[k, str(v)] for k, v in results.items()]
+        result_data = []
+        for k, v in results.items():
+            if isinstance(v, dict):
+                result_data.append([k, ""])
+                for subk, subv in v.items():
+                    result_data.append([f"    {subk}", str(subv)])
+            else:
+                result_data.append([k, str(v)])
         result_table = Table(result_data, colWidths=[200, 300])
         result_table.setStyle(TableStyle([
             ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
