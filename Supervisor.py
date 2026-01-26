@@ -1,95 +1,74 @@
-#!/usr/bin/env python3 
-
-from dataflow_class import DataFlow #DataFLow Class
-from Steering import Steering #Steering Class
-from Comparator import Comparator #comparator Class
-from Reporter import Reporter #Reporting Class
-import argparse
-import os
+from dataflow_class import DataFlow
+from Steering import Steering
+from comparator import Comparator
+from Reporter import Reporter
 from pathlib import Path
-
-
-
-
-"""""
-Note: We can also write it so the sim files are written into the 
-
-The Supervisor Class essentially coordinates all the pipelines.
-
-Then the Steering Class uses the Directory the Supervisor class calls upon to get the specific Geometries and maybe what tests you want to take
-
-It makes the Dataflow run all the simulations
-
-Then it makes the sim go into the Comparison 
-
-Then it makes the Comparison and those results, then get passed along to the Reporter class
-
-The Reporter Class writes the pdf and attatches all the graphs and comparisons and data analysis
-
-"""""
+import argparse, os, json
 
 
 class Supervisor:
     def __init__(self, dir: str):
-        self.dir = dir          #This is basically just the path to the test folder (i.e: smth like MaxObservingCrabs)
-#self. is basically just saying that it belongs to this specific file
-        
+        self.dir = Path(dir)
 
-    def run(self) -> int:
+    def run(self):
+
+        # -------------------------------
+        # Output directories
+        # -------------------------------
+        run_ref = self.dir / "run_ref"
+        run_test = self.dir / "run_test"
+
+        run_ref.mkdir(parents=True, exist_ok=True)
+        run_test.mkdir(parents=True, exist_ok=True)
+
+        # -------------------------------
+        # Get steering config
+        # -------------------------------
         steering = Steering.user_input()
-        json_path = Path(self.dir) / "steering_config.json"
-        steering.save(json_path)
- #Information is basically just the list of commands thats your telling Data Flow to run
-        #information then goes to .simulations which tells the instructions
 
-        DataFlow(json_path).run_full_pipeline()
-     #  runs the sims like cosima, revena, geomega
-        
-        
-        comparison_json = Comparator(self.dir).compare_energy_hist()
-        reporter = Reporter(config_json=comparison_json)  #load that fake JSON
-        reporter.generate_pdf(results={"pass": True, "details": "Fake results from Comparator"})
+        json_ref  = run_ref  / "steering_config.json"
+        json_test = run_test / "steering_config.json"
 
-         #run the comparisons, the more comparisons, the more functions that will get held 
-         #.write() makes the pdf
+        steering.save(json_ref)
+        steering.save(json_test)
 
+        # -------------------------------
+        # Run DataFlow
+        # -------------------------------
+        DataFlow(str(json_ref)).run_full_pipeline()
+        DataFlow(str(json_test)).run_full_pipeline()
 
-#doesn't have to be a "pass" could just be a 1 or 0, we shall decide when we write more of the code
-        
-        
-      #  print("Overall status: ", "PASS" if results.get("pass") else "FAIL") 
-       # return 0 if results.get("pass") else 1
+        # -------------------------------
+        # Histogram paths
+        # -------------------------------
+        ref_hist = run_ref / "results" / "energy_hist.json"
+        test_hist = run_test / "results" / "energy_hist.json"
 
+        comparison_json = self.dir / "comparison_results.json"
+        histogram_dir = self.dir / "histograms"
+        histogram_dir.mkdir(exist_ok=True)
 
+        # -------------------------------
+        # Run Comparator
+        # -------------------------------
+        comp = Comparator(
+            ref_json=str(ref_hist),
+            test_json=str(test_hist),
+            output_json=str(comparison_json),
+            histogram_output_dir=str(histogram_dir),
+            sigma_threshold=3.0
+        )
 
-def main() -> int: 
+        results = comp.compare()
+        overlay_plot = comp.plot_overlay()
 
-    #creates an argument and basically just says if this Path isn't valid, don't run
-    parser = argparse.ArgumentParser(prog='MEGAlib end2end Tests', description='Simulates, compares, and reports differences between 2 MEGAlib Versions')
-    parser.add_argument("path", nargs="?", default=".", help='Finding path towards Existing Directory')
-    args = parser.parse_args()
+        # -------------------------------
+        # Reporter Output
+        # -------------------------------
+        reporter = Reporter(config_json=str(json_ref))
+        reporter.generate_pdf(
+            results=results,
+            histograms={"Energy Comparison": overlay_plot}
+        )
 
-    if not os.path.isdir(args.path):
-        print(f"Error: {args.path} is not a directory")
-    else:
-        print(f"Directory exists and the program will continue : {os.path.abspath(args.path)}")
-
-        Supervisor(args.path).run()
-
-
-if __name__ == "__main__": #will exit the code if it doesnt work
-    raise SystemExit(main())
-
-
-
-
-#parallelizaiton
-#want to run multiple tests in parallel
-#creates a supervisor class, which will either return a 1 or 0
-
-
-#steering class just tells what files to run, and certain configurations, Just keeping the Information
-#maybe just get rid of the DataFlow Class and have the specific runs in the Supervisor Class
-#Use JSON Xfile
-#check if the files exist and sanity check
-
+        print("\n[Supervisor] COMPLETED SUCCESSFULLY\n")
