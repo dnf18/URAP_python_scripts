@@ -8,7 +8,7 @@ import argparse, os, json
 
 class Supervisor:
     def __init__(self, dir: str):
-        self.dir = Path(dir)
+        self.dir = Path(dir).resolve()
 
     def run(self):
 
@@ -24,16 +24,21 @@ class Supervisor:
 
         steering = Steering.user_input()
 
-        json_ref  = run_ref  / "steering_config.json"
-        json_test = run_test / "steering_config.json"
+        ref_cfg  = run_ref  / "steering_config.json"
+        test_cfg = run_test / "steering_config.json"
 
-        steering.save(json_ref)
-        steering.save(json_test)
+        steering.save(ref_cfg)
+        steering.save(test_cfg)
 
-        # Run DataFlow
-
-        DataFlow(str(json_ref)).run_full_pipeline()
-        DataFlow(str(json_test)).run_full_pipeline()
+        # Run DataFlow (reference)
+        df_ref = DataFlow(str(ref_cfg))
+        df_ref.run_full_pipeline()
+        df_ref.generate_histogram()
+		
+        #Run Dataflow (test)
+        df_test = DataFlow(str(test_cfg))
+        df_test.run_full_pipeline()
+        df_test.generate_histogram()
 
         # Histogram paths
      
@@ -44,16 +49,6 @@ class Supervisor:
         histogram_dir = self.dir / "histograms"
         histogram_dir.mkdir(exist_ok=True)
 
-        # Spectrum paths
-
-        ref_meta = run_ref / "results" / "spectrum_meta.json"
-        test_meta = run_test / "results" / "spectrum_meta.json"
-
-        with open(ref_meta) as f:
-            ref_png = json.load(f)["spectrum_png"]
-
-        with open(test_meta) as f:
-            test_png = json.load(f)["spectrum_png"]
 
         # Run Comparator
       
@@ -67,17 +62,26 @@ class Supervisor:
 
         results = comp.compare()
         overlay_plot = comp.plot_overlay()
+        
+        # Spectrum paths
+        
+        histograms = {"Overlay Comparison": overlay_plot}
+        
+        ref_meta = run_ref / "results" / "spectrum_meta.json"
+        test_meta = run_test / "results" / "spectrum_meta.json"
+
+        with open(ref_meta) as f:
+            histograms["Reference Spectrum"] = json.load(f)["spectrum_png"]
+
+        with open(test_meta) as f:
+            histograms["Test Spectrum"] = json.load(f)["spectrum_png"]
 
         # Reporter Output
    
-        reporter = Reporter(config_json=str(json_ref))
+        reporter = Reporter(config_json=str(ref_cfg))
         reporter.generate_pdf(
             results=results,
-            histograms={
-                "Reference Spectrum": ref_png,
-                "Test Spectrum": test_png,
-                "Overlay Comparison": overlay_plot
-            }
+            histograms = histograms
         )
 
         print("\n[Supervisor] COMPLETED SUCCESSFULLY\n")
