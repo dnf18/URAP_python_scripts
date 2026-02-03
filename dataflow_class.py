@@ -3,6 +3,7 @@ import json
 import subprocess
 from pathlib import Path
 import numpy as np
+import re
 
 class DataFlow:
     def __init__(self, json_path: str):
@@ -23,7 +24,7 @@ class DataFlow:
         self.max_events = self.config.get("max_events", 100000)
 
         # Directory for this run
-        self.dir = self.json_path.parent
+        self.dir = self.json_path.parent.resolve()
 
         # Output directory
         self.output_dir = self.dir / "results"
@@ -93,32 +94,50 @@ class DataFlow:
     def extract_energy_list(self):
         spectrum_file = self.output_dir / "spectrum.C"
 
-        run_type = "reference" if "run_ref" in str(self.dir) else "test"
-        out_file = self.output_dir / f"{run_type}_energy.txt"
+        out_file = self.output_dir / ("reference_energy.txt" if "run_ref" in str(self.dir) else "test_energy.txt")
 
         if not spectrum_file.exists():
             print(f"[DataFlow] spectrum.C not found: {spectrum_file}")
             return
+            
+        with open(spectrum_file) as f:
+        	lines = f.readlines()
+        	
 
+        edges = []
+        pattern_edges = re.compile(r"std::vector<Double_t>.*{(.+)};")
+        
+        for line in lines:
+        	if "std::vector<Double_t>" in line and "{" in line and "}" in line:
+        		inside = line.split("{")[1].split("}")[0]
+        		edges = [float(x.strip()) for x in inside.split(",") if x.strip()]
+        		break
+        	
+        counts = []
+        pattern_counts = re.compile(r".*SetBinContent\(\s*\d+\s*,\s*([0-9.+-eE]+)\s*\)")
+        for line in lines:
+        	m = pattern_counts.search(line)
+        	if m:
+        		counts.append(float(m.group(1)))
+        			
         energies = []
-        with open(spectrum_file, "r") as f:
-            for line in f:
-                line = line.strip()
-                if "Fill(" in line and ")" in line:
-                    try:
-                        val = float(line.split("(")[1].split(")")[0])
-                        energies.append(val)
-                    except:
-                        pass
-
+        for i, c in enumerate(counts):
+        	if i >= len(edges)-1:
+        		break
+        	center = 0.5*(edges[i]+edges[i+1])
+        	n = int(round(c))
+        	energies.extend([center]*n)
+        	
         with open(out_file, "w") as f:
-            for e in energies:
-                f.write(f"{e}\n")
+        	for e in energies:
+        		f.write(f"{e}\n")
 
         print(f"[DataFlow] Extracted {len(energies)} energies → {out_file}")
 
         # Create histogram JSON from extracted energies
         self.generate_histogram(energies)
+        png_file = out_file.with_suffix(".png")
+        self.plot_histogram(energies, save_path = png_file)
 
     # -----------------------------
     # Generate histogram JSON
@@ -132,10 +151,18 @@ class DataFlow:
                 raise FileNotFoundError(f"Energy file not found: {energy_txt}")
             with open(energy_txt, "r") as f:
                 energies = [float(line.strip()) for line in f if line.strip()]
-
+                
+        if len(energies) == 0:
+        	raise RuntimeError("[DataFlow] cannot create histogram from empty energy list")
+        	
+        counts, edges = np.histogram(energies, bins = 50, range = (self.energy_cut[0], self.energy_cut[1]))
+        	
         hist_json = self.output_dir / "energy_hist.json"
-        counts, edges = np.histogram(energies, bins=50)
-        hist_data = {"bins": counts.tolist(), "edges": edges.tolist()}
+        
+        hist_data = {
+        	"bins": counts.tolist(), 
+        	"edges": edges.tolist()
+        }
 
         with open(hist_json, "w") as f:
             json.dump(hist_data, f, indent=4)
