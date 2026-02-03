@@ -145,4 +145,4 @@ class Reporter:
             print("📧 Email sent successfully to:", ", ".join(self.email_recipients))
 
         except Exception as e:
-            print("❌ Failed to send email:", e)
+            print("Failed to send email:", e)
