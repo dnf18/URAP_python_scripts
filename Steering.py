@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import json
 from pathlib import Path
 
@@ -173,12 +171,12 @@ class Steering:
 
         print(f"Saved configuration to {path.resolve()}")
 
-    #to show
-    def show(self):
-        print("\n=== Current Steering Configuration ===")
-        for k, v in self.config.items():
-            print(f"  {k}: {v}")
-        print()
+        #to show
+        def show(self):
+            print("\n=== Current Steering Configuration ===")
+            for k, v in self.config.items():
+                print(f"  {k}: {v}")
+            print()
 
 
 if __name__ == "__main__":
