@@ -9,6 +9,11 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Tabl
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
+"""""
+This is the Reporter Class
+
+This is where we attatch all relevant data/graphs onto a PDF aptly named Validation_Report.pdf
+"""""
 
 class Reporter:
 
@@ -38,15 +43,13 @@ class Reporter:
         styles = getSampleStyleSheet()
         story = []
 
-        # ----------------------------------------------------
         # Title
-        # ----------------------------------------------------
+
         story.append(Paragraph("<b>MEGAlib Validation Report</b>", styles["Title"]))
         story.append(Spacer(1, 14))
 
-        # ----------------------------------------------------
         # Configuration Table
-        # ----------------------------------------------------
+
         story.append(Paragraph("<b>Configuration Summary</b>", styles["Heading2"]))
 
         if len(self.config) > 0:
@@ -64,9 +67,8 @@ class Reporter:
             story.append(Paragraph("No configuration provided.", styles["BodyText"]))
             story.append(Spacer(1, 12))
 
-        # ----------------------------------------------------
         # Results Table
-        # ----------------------------------------------------
+
         story.append(Paragraph("<b>Validation Results</b>", styles["Heading2"]))
 
         result_data = [["Metric", "Value"]]
@@ -81,23 +83,40 @@ class Reporter:
         story.append(result_table)
         story.append(Spacer(1, 16))
 
-        # ----------------------------------------------------
-        # Histogram Embedding (Overlay Plot from Comparator)
-        # ----------------------------------------------------
+        # Histogram Embedding (side-by-side)
+
         if histograms:
             story.append(Paragraph("<b>Comparison Histograms</b>", styles["Heading2"]))
 
-            for label, img_path in histograms.items():
-                if os.path.exists(img_path):
-                    story.append(Paragraph(f"{label}", styles["Normal"]))
-                    story.append(Image(img_path, width=400, height=260))
-                    story.append(Spacer(1, 12))
-                else:
-                    story.append(Paragraph(f"{label} — <i>Image not found:</i> {img_path}", styles["BodyText"]))
+            rows = []
+            labels = list(histograms.keys())
+            paths  = list(histograms.values())
 
-        # ----------------------------------------------------
+            images = []
+            for p in paths:
+                if os.path.exists(p):
+                    images.append(Image(p, width=240, height=180))
+                else:
+                    images.append(Paragraph("Missing image", styles["BodyText"]))
+
+            # Pair images two per row
+            for i in range(0, len(images), 2):
+                row = images[i:i+2]
+                if len(row) < 2:
+                    row.append("")
+                rows.append(row)
+
+            table = Table(rows, colWidths=[260, 260])
+            table.setStyle(TableStyle([
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.black),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ]))
+
+            story.append(table)
+            story.append(Spacer(1, 16))
+
         # Final PASS/FAIL Status
-        # ----------------------------------------------------
+    
         status = "PASS" if results.get("pass") else "FAIL"
         color = "green" if status == "PASS" else "red"
         story.append(Paragraph(f"<b>Overall Test Status:</b> <font color='{color}'>{status}</font>", styles["Heading2"]))
@@ -107,9 +126,7 @@ class Reporter:
         print(f"PDF report generated at: {output_path}")
         return output_path
 
-    # --------------------------------------------------------
     # Email Sending (original structure preserved)
-    # --------------------------------------------------------
 
     def send_email(self, subject: str, body: str, attachment_path: str,
                    sender_email: str, sender_password: str):
@@ -142,7 +159,7 @@ class Reporter:
                 smtp.login(sender_email, sender_password)
                 smtp.send_message(msg)
 
-            print("📧 Email sent successfully to:", ", ".join(self.email_recipients))
+            print("Email sent successfully to:", ", ".join(self.email_recipients))
 
         except Exception as e:
             print("Failed to send email:", e)
