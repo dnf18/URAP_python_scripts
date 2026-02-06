@@ -1,47 +1,72 @@
-from dataflow_class import DataFlow
-from Steering import Steering
-from comparator import Comparator
-from Reporter import Reporter
+from dataflow_class import DataFlow #DataFLow Class
+from Steering import Steering #Steering Class
+from comparator import Comparator #comparator Class
+from Reporter import Reporter #Reporting Class
+import argparse
+import os
 from pathlib import Path
-import argparse, os, json
+
+
+
+
+"""""
+
+The Supervisor Class essentially coordinates all the pipelines.
+
+Two different directories are named: run_ref and run_test. 
+
+Results from the simulations and comparison is aptly put in these directories.
+
+Then the Steering Class uses the Directory the Supervisor class calls upon to get the specific Geometries and maybe what tests you want to take
+
+It makes the Dataflow run all the simulations and create the Spectrum PNGs
+
+Then it makes the sim go into the Comparison 
+
+Then it makes the Comparison and those results, then get passed along to the Reporter class
+
+The Reporter Class writes the pdf and attatches all the graphs and comparisons and data analysis
+
+"""""
+
+
 
 
 class Supervisor:
     def __init__(self, dir: str):
-        self.dir = Path(dir).resolve()
+        self.dir = Path(dir)
 
-    def run(self):
-
-        # Output directories
-
+    def run(self) -> int:
+        #create run directories
         run_ref = self.dir / "run_ref"
         run_test = self.dir / "run_test"
-
         run_ref.mkdir(parents=True, exist_ok=True)
         run_test.mkdir(parents=True, exist_ok=True)
 
-        # Get steering config
+        print(f"Created run directories:\n- {run_ref}\n- {run_test}\n")
 
+        #prompt once
+        print("RUN CONFIGURATION (applies to both runs)")
         steering = Steering.user_input()
 
-        ref_cfg  = run_ref  / "steering_config.json"
-        test_cfg = run_test / "steering_config.json"
+        #now save configs into BOTH run folders
+        json_ref = (run_ref / "steering_config.json").resolve()
+        json_test = (run_test / "steering_config.json").resolve()
 
-        steering.save(ref_cfg)
-        steering.save(test_cfg)
+        steering.save(json_ref)
+        steering.save(json_test)
 
-        # Run DataFlow (reference)
-        df_ref = DataFlow(str(ref_cfg))
-        df_ref.run_full_pipeline()
-        df_ref.generate_histogram()
-		
-        #Run Dataflow (test)
-        df_test = DataFlow(str(test_cfg))
-        df_test.run_full_pipeline()
-        df_test.generate_histogram()
+        print("Saved steering to both run_ref and run_test.\n")
 
-        # Histogram paths
-     
+        #run reference pipeline
+        print("RUN 1: Reference")
+        DataFlow(str(json_ref)).run_full_pipeline()
+
+        #run test pipeline
+        print("RUN 2: Test")
+        DataFlow(str(json_test)).run_full_pipeline()
+
+        #compare results
         ref_hist = run_ref / "results" / "energy_hist.json"
         test_hist = run_test / "results" / "energy_hist.json"
 
@@ -49,9 +74,6 @@ class Supervisor:
         histogram_dir = self.dir / "histograms"
         histogram_dir.mkdir(exist_ok=True)
 
-
-        # Run Comparator
-      
         comp = Comparator(
             ref_json=str(ref_hist),
             test_json=str(test_hist),
@@ -62,26 +84,43 @@ class Supervisor:
 
         results = comp.compare()
         overlay_plot = comp.plot_overlay()
-        
-        # Spectrum paths
-        
-        histograms = {"Overlay Comparison": overlay_plot}
-        
+
+        #spectrum png paths (for Reporter)
         ref_meta = run_ref / "results" / "spectrum_meta.json"
         test_meta = run_test / "results" / "spectrum_meta.json"
 
+        import json
         with open(ref_meta) as f:
-            histograms["Reference Spectrum"] = json.load(f)["spectrum_png"]
-
+            ref_png = json.load(f)["spectrum_png"]
         with open(test_meta) as f:
-            histograms["Test Spectrum"] = json.load(f)["spectrum_png"]
+            test_png = json.load(f)["spectrum_png"]
 
-        # Reporter Output
-   
-        reporter = Reporter(config_json=str(ref_cfg))
-        reporter.generate_pdf(
+        Reporter(config_json=str(json_ref)).generate_pdf(
             results=results,
-            histograms = histograms
+            histograms={
+                "Reference Spectrum": ref_png,
+                "Test Spectrum": test_png,
+                "Overlay Comparison": overlay_plot
+            }
         )
 
-        print("\n[Supervisor] COMPLETED SUCCESSFULLY\n")
+        print("Done.")
+        return 0
+
+
+
+def main() -> int: 
+    parser = argparse.ArgumentParser(prog='MEGAlib end2end DualRun', description='Runs two MEGAlib versions and compares outputs')
+    parser.add_argument("path", nargs="?", default=".", help='Finding path towards Existing Directory')
+    args = parser.parse_args()
+
+    if not os.path.isdir(args.path):
+        print(f"Error: {args.path} is not a directory")
+        return 2
+    else:
+        print(f"Directory exists and the program will continue : {os.path.abspath(args.path)}")
+        return Supervisor(args.path).run()
+
+
+if __name__ == "__main__": #will exit the code if it doesnt work
+    raise SystemExit(main())
