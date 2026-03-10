@@ -2,6 +2,7 @@ import os
 import json
 import subprocess
 from pathlib import Path
+import shlex 
 import numpy as np
 
 
@@ -23,7 +24,7 @@ It takes in a steering_config.json and then:
 
 
 class DataFlow:
-    def __init__(self, json_path: str):
+    def __init__(self, json_path: str, env_script: str | None = None):
         self.json_path = Path(json_path)
 
         if not self.json_path.exists():
@@ -44,14 +45,32 @@ class DataFlow:
         #output directory
         self.output_dir = self.dir / "results"
         self.output_dir.mkdir(exist_ok=True, parents=True)
+        self.env_script = env_script
 
     #runs shell command
+
     def run_command(self, cmd, cwd=None):
         cwd = str(cwd) if cwd is not None else None
-        print(f">>> {' '.join(map(str, cmd))}\n")
+
+        # Pretty-print
+        printable = " ".join(map(str, cmd)) if isinstance(cmd, (list, tuple)) else str(cmd)
+        print(f">>> {printable}\n")
+
+        if self.env_script:
+            # Build a shell command safely (quotes each token)
+            if isinstance(cmd, (list, tuple)):
+                cmd_str = " ".join(shlex.quote(str(x)) for x in cmd)
+            else:
+                cmd_str = str(cmd)
+
+            bash_cmd = f'source {shlex.quote(self.env_script)} && {cmd_str}'
+            popen_cmd = ["bash", "-lc", bash_cmd]
+        else:
+            # Original behavior
+            popen_cmd = list(map(str, cmd))
 
         process = subprocess.Popen(
-            list(map(str, cmd)),
+            popen_cmd,
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -64,9 +83,8 @@ class DataFlow:
         process.wait()
 
         if process.returncode != 0:
-            raise RuntimeError(f"Command failed (code {process.returncode}): {cmd}")
-
-    #cosima Simulation
+            raise RuntimeError(f"Command failed (code {process.returncode}): {printable}")
+        #cosima Simulation
 
     def run_simulation(self):
         print("\n==== Step 1: Simulation (cosima) ====")
