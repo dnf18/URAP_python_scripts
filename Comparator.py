@@ -2,8 +2,10 @@ import os
 import json
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import ks_2samp
+from scipy.stats import ks_2samp, anderson_ksamp
 from pathlib import Path
+
+
 
 """""
 This is the Comparator Class
@@ -74,6 +76,10 @@ class Comparator:
         sigma_sig = sigma_diff / ref_sigma if ref_sigma > 0 else 999
 
         ks_stat, ks_p = ks_2samp(ref_counts, test_counts)
+        ad_res = anderson_ksamp([ref_counts, test_counts])
+
+        ad_stat = float(ad_res.statistic)   # the test statistic
+        ad_p    = float(ad_res.pvalue)      # significance level / p-value (SciPy provides pvalue)
 
         passed = bool((sigma_sig < self.sigma_threshold) and (ks_p > 0.05))
 
@@ -88,6 +94,8 @@ class Comparator:
             "Relative Standard Deviation Difference": float(sigma_sig),
             "Kolmogorov-Smirnov statistic": float(ks_stat),
             "Kolmogorov-Smirnov pvalue": float(ks_p),
+            "Anderson-Darling Statistic": float(ad_stat),
+            "Anderson-Darling p-value": float(ad_p),
             "pass": bool(passed),
             "overlay_plot": str(overlay_path)
         }
