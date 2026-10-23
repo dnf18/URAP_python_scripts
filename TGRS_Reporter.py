@@ -1,9 +1,10 @@
 import os
 import json
 import smtplib
-import matplotlib.pyplot as plt
 from email.message import EmailMessage
 from pathlib import Path
+from xml.sax.saxutils import escape
+
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -15,7 +16,28 @@ This is the TGRS Reporter Class
 This is where we attach all relevant data/graphs onto a PDF named TGRS_Validation_Report.pdf
 It takes the 5 plots and 5 JSON stat files produced by the TGRS comparator and assembles them
 into a single PDF report.
+
+The overall PASS/FAIL is decided ONLY by the "Sim A vs Sim B (Combined)" section, i.e. by
+the build-to-build comparison. The comparisons with the measurements are shown as
+information: they depend on the simulation statistics and on physics that is not part of
+a build regression test.
 """
+
+# The one section that decides the overall status
+DECIDING_SECTION = "Sim A vs Sim B (Combined)"
+
+
+def _flatten(data, prefix=""):
+    """Turns nested dicts into [["a / b", "value"], ...] rows."""
+    rows = []
+    for k, v in data.items():
+        key = f"{prefix}{k}"
+        if isinstance(v, dict):
+            rows += _flatten(v, key + " / ")
+        else:
+            rows.append([key, str(v)])
+    return rows
+
 
 class TGRS_Reporter:
 
@@ -24,7 +46,7 @@ class TGRS_Reporter:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load steering config if provided
+        # Load run configuration (run_config.json from the comparator, or a steering config)
         self.config = {}
         if config_json and os.path.exists(config_json):
             with open(config_json, "r") as f:
@@ -43,7 +65,7 @@ class TGRS_Reporter:
             "Sim B vs Measurements":       stats_dir / "test_stats.json",
             "Ratio A vs Measurements":     stats_dir / "reference_ratio_stats.json",
             "Ratio B vs Measurements":     stats_dir / "test_ratio_stats.json",
-            "Sim A vs Sim B (Combined)":   stats_dir / "combined_stats.json",
+            DECIDING_SECTION:              stats_dir / "combined_stats.json",
         }
 
         all_stats = {}
@@ -65,21 +87,25 @@ class TGRS_Reporter:
         output_path = self.output_dir / output_name
         doc = SimpleDocTemplate(str(output_path), pagesize=letter)
         styles = getSampleStyleSheet()
+        cell = styles["BodyText"]
+        cell.fontSize = 8
+        cell.leading = 10
         story  = []
 
         # Title
         story.append(Paragraph("<b>TGRS MEGAlib Validation Report</b>", styles["Title"]))
         story.append(Spacer(1, 14))
 
-        # Configuration Table
+        # Configuration Table (long values wrap inside their cells)
         story.append(Paragraph("<b>Configuration Summary</b>", styles["Heading2"]))
         if self.config:
-            config_data = [["Parameter", "Value"]] + [[k, str(v)] for k, v in self.config.items()]
-            config_table = Table(config_data, colWidths=[150, 350])
+            rows = [[Paragraph("<b>Parameter</b>", cell), Paragraph("<b>Value</b>", cell)]]
+            for k, v in _flatten(self.config):
+                rows.append([Paragraph(escape(k), cell), Paragraph(escape(v), cell)])
+            config_table = Table(rows, colWidths=[200, 300], repeatRows=1)
             config_table.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
             ]))
             story.append(config_table)
@@ -96,20 +122,22 @@ class TGRS_Reporter:
             "Sim B vs Measurements":       stats_dir / "plot2_sim_b.png",
             "Ratio A vs Measurements":     stats_dir / "plot3_ratio_a.png",
             "Ratio B vs Measurements":     stats_dir / "plot4_ratio_b.png",
-            "Sim A vs Sim B (Combined)":   stats_dir / "plot5_all.png",
+            DECIDING_SECTION:              stats_dir / "plot5_all.png",
         }
 
-        overall_pass = True
+        deciding_pass = None   # None = the deciding section is missing
 
         # One section per comparison
         for name, stats in all_stats.items():
-            story.append(Paragraph(f"<b>{name}</b>", styles["Heading2"]))
+            decides = (name == DECIDING_SECTION)
+            heading = name if decides else f"{name} (information only)"
+            story.append(Paragraph(f"<b>{heading}</b>", styles["Heading2"]))
             story.append(Spacer(1, 6))
 
-            # Plot
+            # Plot (the plots are 2:1)
             plot_path = plot_files.get(name)
             if plot_path and plot_path.exists():
-                story.append(Image(str(plot_path), width=460, height=260))
+                story.append(Image(str(plot_path), width=460, height=230))
                 story.append(Spacer(1, 8))
             else:
                 story.append(Paragraph("Plot not found.", styles["BodyText"]))
@@ -131,21 +159,27 @@ class TGRS_Reporter:
             story.append(Spacer(1, 6))
 
             # Pass/Fail per section
-            passed = stats.get("pass", False)
-            if not passed:
-                overall_pass = False
+            passed = bool(stats.get("pass", False))
+            if decides:
+                deciding_pass = passed
             status = "PASS" if passed else "FAIL"
             color  = "green" if passed else "red"
-            story.append(Paragraph(f"Status: <font color='{color}'><b>{status}</b></font>", styles["BodyText"]))
+            note = "" if decides else " (information only - does not affect the overall status)"
+            story.append(Paragraph(f"Status: <font color='{color}'><b>{status}</b></font>{note}",
+                                   styles["BodyText"]))
             story.append(Spacer(1, 16))
 
-        # Overall status
-        overall_status = "PASS" if overall_pass else "FAIL"
-        overall_color  = "green" if overall_pass else "red"
+        # Overall status: build-to-build comparison only
+        if deciding_pass is None:
+            overall_status, overall_color = "UNKNOWN (A vs B comparison missing)", "orange"
+        else:
+            overall_status = "PASS" if deciding_pass else "FAIL"
+            overall_color = "green" if deciding_pass else "red"
         story.append(Paragraph(
             f"<b>Overall Validation Status: <font color='{overall_color}'>{overall_status}</font></b>",
             styles["Heading2"]
         ))
+        story.append(Paragraph("Decided by the A versus B comparison only.", styles["BodyText"]))
 
         doc.build(story)
         print(f"PDF report generated at: {output_path}")
@@ -187,7 +221,7 @@ class TGRS_Reporter:
 # --- Main ---
 if __name__ == "__main__":
     reporter = TGRS_Reporter(
-        config_json="steering_config.json",
+        config_json="results/run_config.json",
         output_dir="./reports"
     )
 
