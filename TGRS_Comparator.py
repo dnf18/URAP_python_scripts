@@ -9,9 +9,12 @@ What it does, following MEGAlib's own TGRS example (TGRS.cxx):
     35 cm2 detector area (TGRS.cxx: TGRSHist->Scale(35)) to get cts/keV/s.
   * Each simulated event is filled at the SUM of its HTsim hit energies
     (TGRS.cxx uses MSimEvent::GetREnergy(), which is exactly that sum).
-  * Each simulation component (photons, protons, ...) is normalised by ITS OWN
-    observation time and bin width, and the components are then added together,
-    like the "Sim" histogram in TGRS.cxx.
+  * Each simulation component is normalised by ITS OWN observation time and
+    bin width, and the components are then added together, like the "Sim"
+    histogram in TGRS.cxx. The TGRS benchmark has three simulation runs:
+        photons  - CosmicPhotons          (SpaceSim)
+        prompt   - CosmicProtonsPrompt    (activation Step 1, prompt proton hits)
+        decays   - CosmicProtons.Decays   (activation Step 3, delayed decay)
   * A component can consist of many files (mcosima writes one per instance).
     Counts are summed over the files and so are their observation times.
   * Observation time per file = last event time minus the start time, where the
@@ -22,17 +25,23 @@ Not done here: detector energy resolution. TGRS.cxx applies it unless it is run
 with -p; this script uses the raw simulated hit energies. This does not matter
 for A-versus-B, but line shapes against the measurements will differ.
 
-Usage:
-    python3 TGRS_Comparator.py --tgrs TGRS.dat \\
-        --ref  "photons=a/CosmicPhotons.p1.inc*.id1.sim.gz" \\
-        --ref  "protons=a/CosmicProtons.Decays.p1.inc*.id1.sim.gz" \\
-        --test "photons=b/CosmicPhotons.p1.inc*.id1.sim.gz" \\
-        --test "protons=b/CosmicProtons.Decays.p1.inc*.id1.sim.gz" \\
-        --ref-label "Geant4 10.2 (main)" --test-label "Geant4 11.4 (dc6)" \\
-        --out results --config steering_config.json --reports reports
+Output: five plots + five stats JSONs + binned_rates.json + run_config.json in
+--out, and (unless --no-report) a PDF in --reports. The overall PASS/FAIL in
+the PDF is decided by the A-versus-B comparison only.
 
-Each --ref / --test is NAME=GLOB. Use --ref/--test as often as you have
-components (a photons-only run is fine). Quote the globs.
+Usage:
+    python3 TGRS_Comparator.py --tgrs TGRS.dat --rebin 10 \\
+        --ref  "photons=a/CosmicPhotons.p1.inc*.id1.sim.gz" \\
+        --ref  "prompt=a/CosmicProtonsPrompt.p1.inc*.id1.sim.gz" \\
+        --ref  "decays=a/CosmicProtons.Decays.p1.inc*.id1.sim.gz" \\
+        --test "photons=b/CosmicPhotons.p1.inc*.id1.sim.gz" \\
+        --test "prompt=b/CosmicProtonsPrompt.p1.inc*.id1.sim.gz" \\
+        --test "decays=b/CosmicProtons.Decays.p1.inc*.id1.sim.gz" \\
+        --ref-label "Geant4 10.2 (main)" --test-label "Geant4 11.4 (dc6)" \\
+        --out results --reports reports
+
+Each --ref / --test is NAME=GLOB; give as many components as you have
+(quote the globs). --rebin N merges N neighbouring energy bins.
 """
 
 import argparse
@@ -51,6 +60,14 @@ from scipy.stats import chi2 as chi2_dist
 DETECTOR_AREA_CM2 = 35.0     # TGRS.cxx: TGRSHist->Scale(35)
 SIGMA_THRESHOLD = 3.0
 P_THRESHOLD = 0.05
+
+# Names and colours of the components, as in the TGRS benchmark reference figure.
+# Component names not listed here get a default colour and their own name.
+COMPONENT_STYLE = {
+    "photons": ("Cosmic Photons", "gold"),
+    "prompt":  ("Cosmic Protons Prompt", "limegreen"),
+    "decays":  ("Cosmic Protons Activation", "blue"),
+}
 
 
 # ------------------------------------------------------------------ measurements
@@ -94,6 +111,30 @@ def load_tgrs(filepath):
     rate = arr[:, 2] * DETECTOR_AREA_CM2
     err = arr[:, 3] * DETECTOR_AREA_CM2
     return edges, rate, err
+
+
+def rebin_edges(edges, n):
+    """Merge every n neighbouring bins (the last group may be smaller)."""
+    if n <= 1:
+        return edges
+    new = edges[::n]
+    if new[-1] != edges[-1]:
+        new = np.append(new, edges[-1])
+    return new
+
+
+def rebin_measurement(edges, rate, err, n):
+    """Width-weighted average of the rates in each group; errors added in quadrature."""
+    if n <= 1:
+        return edges, rate, err
+    new_edges = rebin_edges(edges, n)
+    width = np.diff(edges)
+    idx = np.arange(len(rate)) // n
+    ng = int(idx.max()) + 1
+    num = np.bincount(idx, weights=rate * width, minlength=ng)
+    var = np.bincount(idx, weights=(err * width) ** 2, minlength=ng)
+    wsum = np.bincount(idx, weights=width, minlength=ng)
+    return new_edges, num / wsum, np.sqrt(var) / wsum
 
 
 # ------------------------------------------------------------------ simulations
@@ -217,38 +258,42 @@ def component_rate(pattern, edges):
         "files_used": used,
         "files_skipped": len(skipped),
         "files_truncated": len(truncated_files),
-        "observation_time_s": total_time,
+        "observation_time_s": round(total_time, 3),
         "events_in_range": int(counts.sum()),
     }
     return rate, err, info
 
 
 def side_rate(components, edges):
-    """Adds the components of one side (e.g. photons + protons), like TGRS.cxx."""
+    """
+    Adds the components of one side (photons + prompt + decays ...), like TGRS.cxx.
+    Returns (total_rate, total_err, infos, per_component_rates).
+    """
     total = np.zeros(len(edges) - 1)
     var = np.zeros(len(edges) - 1)
-    infos = {}
+    infos, parts = {}, {}
     for name, pattern in components.items():
         rate, err, info = component_rate(pattern, edges)
         total += rate
         var += err ** 2
         infos[name] = info
+        parts[name] = rate
         print(f"[Sim] {name}: {info['files_used']} file(s), "
               f"{info['observation_time_s']:.1f} s, {info['events_in_range']} events")
-    return total, np.sqrt(var), infos
+    return total, np.sqrt(var), infos, parts
 
 
 # ------------------------------------------------------------------ statistics
 
-def _chi2_block(pulls, used, prefix=""):
+def _chi2_block(pulls, used):
     chi2_val = float(np.sum(pulls[used] ** 2))
     ndf = int(np.sum(used))
     p = float(chi2_dist.sf(chi2_val, ndf)) if ndf > 0 else float("nan")
     return {
-        f"{prefix}Chi2": chi2_val,
-        f"{prefix}NDF": ndf,
-        f"{prefix}Chi2/NDF": chi2_val / ndf if ndf > 0 else float("nan"),
-        f"{prefix}Chi2 p-value": p,
+        "Chi2": chi2_val,
+        "NDF": ndf,
+        "Chi2/NDF": chi2_val / ndf if ndf > 0 else float("nan"),
+        "Chi2 p-value": p,
     }, p
 
 
@@ -293,9 +338,7 @@ def compare_ratio(meas, emeas, sim, esim, edges, name_sim):
     used = ok & (ratio_err > 0)
     pulls = np.zeros_like(meas)
     pulls[used] = (ratio[used] - 1.0) / ratio_err[used]
-    block, p = _chi2_block(pulls, used, prefix="Chi2 about 1: ")
-    # keep the usual key names for the reporter
-    block = {k.replace("Chi2 about 1: ", ""): v for k, v in block.items()}
+    block, p = _chi2_block(pulls, used)
 
     r = ratio[ok]
     stats = {
@@ -318,21 +361,35 @@ def _floor(*arrays):
     return float(vals.min()) / 2.0
 
 
-def plot_spectra(path, edges, meas, emeas, series, title):
-    """series: list of (label, rate, color)."""
+def plot_spectra(path, edges, meas, emeas, series, title, components=(),
+                 plot_emin=None, fixed_ylim=True):
+    """
+    series: list of (label, rate, color) - drawn thick (the combined spectra).
+    components: list of (label, rate, color) - drawn as thinner solid lines
+                underneath (photons / prompt / activation).
+    The look follows the reference figure of the TGRS benchmark: log-log,
+    1e-5 to 1e2 cts/keV/s, measurements in black.
+    """
     emid = 0.5 * (edges[:-1] + edges[1:])
     plt.figure(figsize=(12, 6))
-    plt.step(emid, meas, where="mid", color="black", linewidth=1.5, label="Measurements (x35 cm2)")
-    plt.errorbar(emid, meas, yerr=emeas, fmt="none", color="black", alpha=0.3)
+    for label, rate, color in components:
+        plt.step(emid, rate, where="mid", color=color, linewidth=0.9, alpha=0.9, label=label)
     for label, rate, color in series:
-        plt.step(emid, rate, where="mid", color=color, linewidth=1, alpha=0.8, label=label)
+        plt.step(emid, rate, where="mid", color=color, linewidth=1.2, alpha=0.9, label=label)
+    plt.step(emid, meas, where="mid", color="black", linewidth=1.3, label="Measurements (x35 cm2)")
+    plt.errorbar(emid, meas, yerr=emeas, fmt="none", color="black", alpha=0.3)
     plt.xscale("log")
     plt.yscale("log")
     plt.xlabel("Energy (keV)")
     plt.ylabel("Hits (cts/keV/s)")
-    plt.ylim(bottom=_floor(meas, *[s[1] for s in series]))
+    if fixed_ylim:
+        plt.ylim(1e-5, 1e2)
+    else:
+        plt.ylim(bottom=_floor(meas, *[s[1] for s in series]))
+    if plot_emin:
+        plt.xlim(left=plot_emin)
     plt.title(title)
-    plt.legend()
+    plt.legend(fontsize=8)
     plt.tight_layout()
     plt.savefig(path, dpi=150)
     plt.close()
@@ -341,14 +398,18 @@ def plot_spectra(path, edges, meas, emeas, series, title):
 
 def plot_ratio(path, edges, ratio, label, color, title):
     emid = 0.5 * (edges[:-1] + edges[1:])
+    good = ratio[np.isfinite(ratio) & (ratio > 0)]
     plt.figure(figsize=(12, 6))
-    plt.step(emid, ratio, where="mid", color=color, linewidth=1.5, label=label)
+    plt.step(emid, ratio, where="mid", color=color, linewidth=1.2, label=label)
     plt.axhline(1.0, color="black", linestyle="--", linewidth=1, label="Perfect agreement")
     plt.xscale("log")
+    plt.yscale("log")
+    if good.size:
+        lo, hi = np.percentile(good, [1, 99])
+        plt.ylim(min(lo, 0.5) / 2.0, max(hi, 2.0) * 2.0)
     plt.xlabel("Energy (keV)")
-    plt.ylabel("Ratio (Measurements / Sim)")
+    plt.ylabel("Ratio (Measurements / Sim), log scale")
     plt.title(title)
-    plt.ylim(0, 3)
     plt.legend()
     plt.tight_layout()
     plt.savefig(path, dpi=150)
@@ -359,17 +420,32 @@ def plot_ratio(path, edges, ratio, label, color, title):
 # ------------------------------------------------------------------ driver
 
 def run_comparison(tgrs_file, ref_components, test_components, output_dir,
-                   ref_label="Reference (A)", test_label="Test (B)"):
+                   ref_label="Reference (A)", test_label="Test (B)",
+                   rebin=1, extra_config=None, plot_emin=None):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    edges, meas, emeas = load_tgrs(tgrs_file)
-    print(f"[TGRS] {len(meas)} bins, {edges[0]:g} - {edges[-1]:g} keV")
+    edges0, meas0, emeas0 = load_tgrs(tgrs_file)
+    edges, meas, emeas = rebin_measurement(edges0, meas0, emeas0, int(rebin))
+    print(f"[TGRS] {len(meas0)} bins -> {len(meas)} bins after rebin x{int(rebin)}, "
+          f"{edges[0]:g} - {edges[-1]:g} keV")
 
     print(f"\n[{ref_label}]")
-    rate_a, err_a, info_a = side_rate(ref_components, edges)
+    rate_a, err_a, info_a, parts_a = side_rate(ref_components, edges)
     print(f"\n[{test_label}]")
-    rate_b, err_b, info_b = side_rate(test_components, edges)
+    rate_b, err_b, info_b, parts_b = side_rate(test_components, edges)
+
+    cmap = plt.get_cmap("tab10")
+
+    def style_components(parts):
+        out = []
+        for i, (n, r) in enumerate(parts.items()):
+            label, color = COMPONENT_STYLE.get(n, (n, cmap(i % 10)))
+            out.append((label, r, color))
+        return out
+
+    comp_a = style_components(parts_a)
+    comp_b = style_components(parts_b)
 
     def save(name, stats, plot):
         stats["overlay_plot"] = str(plot)
@@ -379,14 +455,14 @@ def run_comparison(tgrs_file, ref_components, test_components, output_dir,
 
     # 1/2: each simulation against the measurements
     p1 = output_dir / "plot1_sim_a.png"
-    plot_spectra(p1, edges, meas, emeas, [(ref_label, rate_a, "blue")],
-                 f"{ref_label} vs Measurements")
+    plot_spectra(p1, edges, meas, emeas, [("Combined Simulations", rate_a, "red")],
+                 f"{ref_label} vs Measurements", components=comp_a, plot_emin=plot_emin)
     s1, _ = compare_rates(rate_a, err_a, meas, emeas, edges, ref_label, "Measurements")
     save("reference_stats.json", s1, p1)
 
     p2 = output_dir / "plot2_sim_b.png"
-    plot_spectra(p2, edges, meas, emeas, [(test_label, rate_b, "red")],
-                 f"{test_label} vs Measurements")
+    plot_spectra(p2, edges, meas, emeas, [("Combined Simulations", rate_b, "red")],
+                 f"{test_label} vs Measurements", components=comp_b, plot_emin=plot_emin)
     s2, _ = compare_rates(rate_b, err_b, meas, emeas, edges, test_label, "Measurements")
     save("test_stats.json", s2, p2)
 
@@ -406,8 +482,8 @@ def run_comparison(tgrs_file, ref_components, test_components, output_dir,
     # 5: everything together, and A versus B (the actual build-to-build check)
     p5 = output_dir / "plot5_all.png"
     plot_spectra(p5, edges, meas, emeas,
-                 [(ref_label, rate_a, "blue"), (test_label, rate_b, "red")],
-                 f"{ref_label} & {test_label} vs Measurements")
+                 [(f"{ref_label} (combined)", rate_a, "blue"), (f"{test_label} (combined)", rate_b, "red")],
+                 f"{ref_label} & {test_label} vs Measurements", plot_emin=plot_emin)
     s5, _ = compare_rates(rate_a, err_a, rate_b, err_b, edges, ref_label, test_label)
     save("combined_stats.json", s5, p5)
 
@@ -418,9 +494,30 @@ def run_comparison(tgrs_file, ref_components, test_components, output_dir,
             "measurements": meas.tolist(), "measurements_err": emeas.tolist(),
             "reference": rate_a.tolist(), "reference_err": err_a.tolist(),
             "test": rate_b.tolist(), "test_err": err_b.tolist(),
+            "reference_components": {k: v.tolist() for k, v in parts_a.items()},
+            "test_components": {k: v.tolist() for k, v in parts_b.items()},
             "reference_info": info_a, "test_info": info_b,
         }, f, indent=2)
     print("Saved binned_rates.json")
+
+    # Run summary shown at the top of the PDF
+    config = {
+        "Reference (A)": ref_label,
+        "Test (B)": test_label,
+        "TGRS data file": str(tgrs_file),
+        "Measurement scaling": f"x{DETECTOR_AREA_CM2:g} cm2 (as TGRS.cxx)",
+        "Energy range (keV)": f"{edges[0]:g} - {edges[-1]:g}",
+        "Energy bins": f"{len(meas)} (rebin x{int(rebin)} of {len(meas0)})",
+        "Energy resolution applied": "No - raw simulated hit energies",
+        "Overall PASS/FAIL decided by": "A versus B comparison only",
+        "Reference components": info_a,
+        "Test components": info_b,
+    }
+    if extra_config:
+        config["Steering config"] = extra_config
+    with open(output_dir / "run_config.json", "w") as f:
+        json.dump(config, f, indent=2)
+    print("Saved run_config.json")
 
     return {"reference": s1, "test": s2, "ref_ratio": s3, "test_ratio": s4, "ref_vs_test": s5}
 
@@ -446,21 +543,33 @@ def main():
                     help="Test-build component")
     ap.add_argument("--ref-label", default="Reference (A)")
     ap.add_argument("--test-label", default="Test (B)")
+    ap.add_argument("--rebin", type=int, default=1,
+                    help="Merge this many neighbouring energy bins (default 1; try 10)")
+    ap.add_argument("--plot-emin", type=float, default=50.0,
+                    help="Lower energy edge of the spectrum plots in keV (default 50, as in the "
+                         "reference figure). Only affects plots, not the statistics.")
     ap.add_argument("--out", default="results", help="Directory for plots and stats")
-    ap.add_argument("--config", default="steering_config.json",
-                    help="Config JSON shown in the PDF (optional)")
+    ap.add_argument("--config", default=None,
+                    help="Optional steering_config.json to include in the PDF")
     ap.add_argument("--reports", default="./reports", help="Directory for the PDF")
     ap.add_argument("--no-report", action="store_true", help="Skip the PDF")
     args = ap.parse_args()
 
+    extra = None
+    if args.config and Path(args.config).exists():
+        with open(args.config) as f:
+            extra = json.load(f)
+
     run_comparison(args.tgrs,
                    _parse_components(args.ref, "--ref"),
                    _parse_components(args.test, "--test"),
-                   args.out, args.ref_label, args.test_label)
+                   args.out, args.ref_label, args.test_label,
+                   rebin=args.rebin, extra_config=extra, plot_emin=args.plot_emin)
 
     if not args.no_report:
         from TGRS_Reporter import TGRS_Reporter   # imported late: needs reportlab
-        reporter = TGRS_Reporter(config_json=args.config, output_dir=args.reports)
+        reporter = TGRS_Reporter(config_json=str(Path(args.out) / "run_config.json"),
+                                 output_dir=args.reports)
         reporter.generate_pdf(stats_dir=args.out)
 
 
