@@ -374,10 +374,16 @@ def plot_spectra(path, edges, meas, emeas, series, title, components=(),
     plt.figure(figsize=(12, 6))
     for label, rate, color in components:
         plt.step(emid, rate, where="mid", color=color, linewidth=0.9, alpha=0.9, label=label)
-    for label, rate, color in series:
+    for item in series:
+        label, rate, color = item[:3]
+        err = item[3] if len(item) > 3 else None
         plt.step(emid, rate, where="mid", color=color, linewidth=1.2, alpha=0.9, label=label)
+        if err is not None:
+            # +-1 sigma Poisson band (lower edge kept positive for the log axis)
+            lo = np.maximum(rate - err, 1e-12)
+            plt.fill_between(emid, lo, rate + err, step="mid", color=color, alpha=0.25, linewidth=0)
     plt.step(emid, meas, where="mid", color="black", linewidth=1.3, label="Measurements (x35 cm2)")
-    plt.errorbar(emid, meas, yerr=emeas, fmt="none", color="black", alpha=0.3)
+    plt.errorbar(emid, meas, yerr=emeas, fmt="none", color="black", alpha=0.4, elinewidth=0.8)
     plt.xscale("log")
     plt.yscale("log")
     plt.xlabel("Energy (keV)")
@@ -411,6 +417,38 @@ def plot_ratio(path, edges, ratio, label, color, title):
     plt.ylabel("Ratio (Measurements / Sim), log scale")
     plt.title(title)
     plt.legend()
+    plt.tight_layout()
+    plt.savefig(path, dpi=150)
+    plt.close()
+    print(f"Saved {path}")
+
+
+def plot_residuals(path, edges, rate_a, err_a, rate_b, err_b, pulls, label_a, label_b):
+    """Residual between the two Monte Carlo runs only (A - B), top: in rate with
+    +-1 sigma band, bottom: in units of sigma (pull) with +-3 sigma guides."""
+    emid = 0.5 * (edges[:-1] + edges[1:])
+    sigma = np.sqrt(err_a ** 2 + err_b ** 2)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), sharex=True,
+                                   gridspec_kw={"height_ratios": [1, 1]})
+    ax1.fill_between(emid, -sigma, sigma, step="mid", color="gray", alpha=0.3,
+                     label="+-1 sigma (Poisson, A and B combined)")
+    ax1.step(emid, rate_a - rate_b, where="mid", color="purple", linewidth=0.9,
+             label=f"{label_a} - {label_b}")
+    ax1.axhline(0, color="black", linewidth=0.8)
+    ax1.set_ylabel("Rate difference (cts/keV/s)")
+    ax1.set_yscale("symlog", linthresh=1e-3)
+    ax1.legend(fontsize=8)
+    ax1.set_title(f"Residuals between the two simulations: {label_a} - {label_b}")
+
+    ax2.step(emid, pulls, where="mid", color="purple", linewidth=0.9)
+    ax2.axhline(0, color="black", linewidth=0.8)
+    for y in (-SIGMA_THRESHOLD, SIGMA_THRESHOLD):
+        ax2.axhline(y, color="red", linestyle="--", linewidth=0.8)
+    ax2.set_ylabel("Pull = (A - B) / sigma")
+    ax2.set_xlabel("Energy (keV)")
+    ax2.set_xscale("log")
+    lim = max(4.0, float(np.nanmax(np.abs(pulls))) * 1.1) if len(pulls) else 4.0
+    ax2.set_ylim(-lim, lim)
     plt.tight_layout()
     plt.savefig(path, dpi=150)
     plt.close()
@@ -455,13 +493,13 @@ def run_comparison(tgrs_file, ref_components, test_components, output_dir,
 
     # 1/2: each simulation against the measurements
     p1 = output_dir / "plot1_sim_a.png"
-    plot_spectra(p1, edges, meas, emeas, [("Combined Simulations", rate_a, "red")],
+    plot_spectra(p1, edges, meas, emeas, [("Combined Simulations", rate_a, "red", err_a)],
                  f"{ref_label} vs Measurements", components=comp_a, plot_emin=plot_emin)
     s1, _ = compare_rates(rate_a, err_a, meas, emeas, edges, ref_label, "Measurements")
     save("reference_stats.json", s1, p1)
 
     p2 = output_dir / "plot2_sim_b.png"
-    plot_spectra(p2, edges, meas, emeas, [("Combined Simulations", rate_b, "red")],
+    plot_spectra(p2, edges, meas, emeas, [("Combined Simulations", rate_b, "red", err_b)],
                  f"{test_label} vs Measurements", components=comp_b, plot_emin=plot_emin)
     s2, _ = compare_rates(rate_b, err_b, meas, emeas, edges, test_label, "Measurements")
     save("test_stats.json", s2, p2)
@@ -482,10 +520,14 @@ def run_comparison(tgrs_file, ref_components, test_components, output_dir,
     # 5: everything together, and A versus B (the actual build-to-build check)
     p5 = output_dir / "plot5_all.png"
     plot_spectra(p5, edges, meas, emeas,
-                 [(f"{ref_label} (combined)", rate_a, "blue"), (f"{test_label} (combined)", rate_b, "red")],
+                 [(f"{ref_label} (combined)", rate_a, "blue", err_a), (f"{test_label} (combined)", rate_b, "red", err_b)],
                  f"{ref_label} & {test_label} vs Measurements", plot_emin=plot_emin)
-    s5, _ = compare_rates(rate_a, err_a, rate_b, err_b, edges, ref_label, test_label)
+    s5, pulls_ab = compare_rates(rate_a, err_a, rate_b, err_b, edges, ref_label, test_label)
     save("combined_stats.json", s5, p5)
+
+    # 6: residuals between the two Monte Carlo runs only
+    p6 = output_dir / "plot6_residual_ab.png"
+    plot_residuals(p6, edges, rate_a, err_a, rate_b, err_b, pulls_ab, ref_label, test_label)
 
     emid = 0.5 * (edges[:-1] + edges[1:])
     with open(output_dir / "binned_rates.json", "w") as f:
