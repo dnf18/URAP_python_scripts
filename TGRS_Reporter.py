@@ -142,6 +142,13 @@ class TGRS_Reporter:
             else:
                 story.append(Paragraph("Plot not found.", styles["BodyText"]))
 
+            # Residual plot between the two simulations (deciding section only)
+            if decides:
+                resid = stats_dir / "plot6_residual_ab.png"
+                if resid.exists():
+                    story.append(Image(str(resid), width=460, height=268))
+                    story.append(Spacer(1, 8))
+
             # Stats table
             stat_data = [["Metric", "Value"]]
             for k, v in stats.items():
