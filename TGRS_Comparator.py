@@ -297,6 +297,30 @@ def _chi2_block(pulls, used):
     }, p
 
 
+# Energy bands (keV) for the per-band chi2: an offset in a few low-energy bins can be
+# averaged away in the overall chi2, which is dominated by many noisy high-energy bins.
+BANDS = [(0.0, 100.0), (100.0, 1000.0), (1000.0, float("inf"))]
+
+
+def _band_stats(pulls, used, edges):
+    mid = 0.5 * (edges[:-1] + edges[1:])
+    out = {}
+    for lo, hi in BANDS:
+        label = (f"< {hi:g} keV" if lo == 0 else
+                 f"{lo:g} - {hi:g} keV" if np.isfinite(hi) else f"> {lo:g} keV")
+        sel = used & (mid >= lo) & (mid < hi)
+        n = int(np.sum(sel))
+        if n == 0:
+            out[f"Band {label}: bins"] = 0
+            continue
+        c2 = float(np.sum(pulls[sel] ** 2))
+        out[f"Band {label}: bins"] = n
+        out[f"Band {label}: Chi2/NDF"] = round(c2 / n, 3)
+        out[f"Band {label}: p-value"] = round(float(chi2_dist.sf(c2, n)), 4)
+        out[f"Band {label}: mean pull"] = round(float(np.mean(pulls[sel])), 3)
+    return out
+
+
 def compare_rates(x, ex, y, ey, edges, name_x, name_y):
     """Per-bin pulls and chi2 between two rate spectra, with propagated errors."""
     sigma = np.sqrt(ex ** 2 + ey ** 2)
@@ -322,6 +346,7 @@ def compare_rates(x, ex, y, ey, edges, name_x, name_y):
         "Worst bin energy range (keV)": [float(edges[worst]), float(edges[worst + 1])],
         "Worst bin pull": float(pulls[worst]),
         "KS distance (cumulative spectra)": ks,
+        **_band_stats(pulls, used, edges),
         "pass": bool(p > P_THRESHOLD),
     }
     return stats, pulls
