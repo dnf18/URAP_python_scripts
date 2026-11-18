@@ -55,7 +55,7 @@ class Comparator:
                  log_x=True, log_y=True,
                  ref_hist=None, test_hist=None, mode="chi2",
                  tolerance=0.25, pass_fraction=0.8, density=True,
-                 component_prefix="Component_"):
+                 component_prefix="Component_", dpi=400):
         # ref_json / test_json keep their old names for compatibility,
         # but they may point to .json or .root files (and may be the same file).
         self.ref_path = Path(ref_json)
@@ -80,6 +80,7 @@ class Comparator:
         self.log_x = log_x
         self.log_y = log_y
         self.component_prefix = component_prefix
+        self.dpi = dpi  # PNG resolution; a vector PDF copy is saved too
 
     # ------------------------------------------------------------------ loading
 
@@ -316,7 +317,8 @@ class Comparator:
 
         fig.tight_layout()
         output_path = self.hist_dir / "energy_overlay.png"
-        fig.savefig(output_path, dpi=200)
+        fig.savefig(output_path, dpi=self.dpi)
+        fig.savefig(output_path.with_suffix(".pdf"))  # vector copy, sharp at any zoom
         plt.close(fig)
         print(f"[Comparator] Spectrum plot saved -> {output_path}")
         return output_path
@@ -344,7 +346,8 @@ class Comparator:
             ax.set_xscale("log")
         fig.tight_layout()
         output_path = self.hist_dir / "energy_ratio.png"
-        fig.savefig(output_path, dpi=200)
+        fig.savefig(output_path, dpi=self.dpi)
+        fig.savefig(output_path.with_suffix(".pdf"))  # vector copy, sharp at any zoom
         plt.close(fig)
         print(f"[Comparator] Ratio plot saved -> {output_path}")
         return output_path
@@ -370,6 +373,7 @@ def main():
     parser.add_argument("--sigma", type=float, default=3.0)
     parser.add_argument("--ref-label", default="Measurements")
     parser.add_argument("--test-label", default="Combined Simulations")
+    parser.add_argument("--dpi", type=int, default=400, help="PNG resolution (a PDF is saved too)")
     parser.add_argument("--out", default="comparison", help="Output directory")
     args = parser.parse_args()
 
@@ -380,7 +384,7 @@ def main():
                       ref_time=args.ref_time, test_time=args.test_time,
                       ref_label=args.ref_label, test_label=args.test_label,
                       ref_hist=args.ref_hist, test_hist=args.test_hist, mode=args.mode,
-                      tolerance=args.tolerance, pass_fraction=args.pass_fraction,
+                      tolerance=args.tolerance, pass_fraction=args.pass_fraction, dpi=args.dpi,
                       density=not args.counts)
     for k, v in comp.compare().items():
         print(f"  {k}: {v}")

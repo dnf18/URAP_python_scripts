@@ -60,6 +60,7 @@ from scipy.stats import chi2 as chi2_dist
 DETECTOR_AREA_CM2 = 35.0     # TGRS.cxx: TGRSHist->Scale(35)
 SIGMA_THRESHOLD = 3.0
 P_THRESHOLD = 0.05
+PLOT_DPI = 300              # resolution of the saved PNGs; change with --dpi
 
 # Names and colours of the components, as in the TGRS benchmark reference figure.
 # Component names not listed here get a default colour and their own name.
@@ -422,7 +423,7 @@ def plot_spectra(path, edges, meas, emeas, series, title, components=(),
     plt.title(title)
     plt.legend(fontsize=8)
     plt.tight_layout()
-    plt.savefig(path, dpi=150)
+    plt.savefig(path, dpi=PLOT_DPI)
     plt.close()
     print(f"Saved {path}")
 
@@ -443,7 +444,7 @@ def plot_ratio(path, edges, ratio, label, color, title):
     plt.title(title)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(path, dpi=150)
+    plt.savefig(path, dpi=PLOT_DPI)
     plt.close()
     print(f"Saved {path}")
 
@@ -475,7 +476,7 @@ def plot_residuals(path, edges, rate_a, err_a, rate_b, err_b, pulls, label_a, la
     lim = max(4.0, float(np.nanmax(np.abs(pulls))) * 1.1) if len(pulls) else 4.0
     ax2.set_ylim(-lim, lim)
     plt.tight_layout()
-    plt.savefig(path, dpi=150)
+    plt.savefig(path, dpi=PLOT_DPI)
     plt.close()
     print(f"Saved {path}")
 
@@ -602,6 +603,7 @@ def _parse_components(items, flag):
 
 
 def main():
+    global PLOT_DPI
     ap = argparse.ArgumentParser(description="Compare two MEGAlib builds against TGRS data")
     ap.add_argument("--tgrs", default="TGRS.dat", help="TGRS.dat measurement file")
     ap.add_argument("--ref", action="append", default=[], metavar="NAME=GLOB",
@@ -615,12 +617,16 @@ def main():
     ap.add_argument("--plot-emin", type=float, default=50.0,
                     help="Lower energy edge of the spectrum plots in keV (default 50, as in the "
                          "reference figure). Only affects plots, not the statistics.")
+    ap.add_argument("--dpi", type=int, default=PLOT_DPI,
+                    help="Resolution of the saved plots in dots per inch (default 300)")
     ap.add_argument("--out", default="results", help="Directory for plots and stats")
     ap.add_argument("--config", default=None,
                     help="Optional steering_config.json to include in the PDF")
     ap.add_argument("--reports", default="./reports", help="Directory for the PDF")
     ap.add_argument("--no-report", action="store_true", help="Skip the PDF")
     args = ap.parse_args()
+
+    PLOT_DPI = args.dpi
 
     extra = None
     if args.config and Path(args.config).exists():
