@@ -142,3 +142,61 @@ python3 tgrs_pipeline/scripts/TGRS_Line_Compare.py $RUN_A/TGRS_output.root $RUN_
 
 These document how the dc6 install and the TGRS binary were built on Savio (not needed to run the pipeline):
 `build_megalib_dc6.sh`, `finish_megalib_dc6.sh`, `build_healpix_deps.sh`, `build_tgrs.sh`, `patch_tgrs.py`.
+
+## 5. Validation report in the LaTeX layout (optional)
+
+`TGRS_Latex_Reporter.py` builds the validation report in a LaTeX layout (table of contents, numbered sections, page
+numbers, links) straight from the two `TGRS_output.root` files. It is independent of step 3: it does not use
+`Comparator.py` or `TGRS_Reporter.py`, and needs only `TGRS_Line_Compare.py` and `tgrs_lines.csv` in the same folder.
+The PASS/FAIL decision is the same A-versus-B tolerance test as in step 3.
+
+Requirements: numpy, scipy, matplotlib, uproot, and a LaTeX installation (`pdflatex` with the packages booktabs,
+longtable, pdflscape, hyperref). On Savio: `module load anaconda3 texlive`.
+
+```
+module load anaconda3 texlive
+RUN_A=<folder of the runs>/old_full
+RUN_B=<folder of the runs>/dc6_full
+python3 tgrs_pipeline/scripts/TGRS_Latex_Reporter.py $RUN_A/TGRS_output.root $RUN_B/TGRS_output.root \
+  --tgrs tgrs_pipeline/inputs/dc6/TGRS.dat --lines tgrs_pipeline/scripts/tgrs_lines.csv \
+  --ref-label "MEGAlib 10.2 (Geant4 10.2.3)" --test-label "MEGAlib dc6 (Geant4 11.4.3)" \
+  --out analysis/latex_report
+```
+
+The result is `analysis/latex_report/TGRS_Validation_Report.pdf`, next to the `.tex` file and a `figs/` folder. If
+`pdflatex` is not found, the script still writes the `.tex` file and the figures; compile them elsewhere (for example
+in Overleaf) or run `pdflatex TGRS_Validation_Report.tex` twice.
+
+What the report contains:
+
+1. Configuration summary, then spectra, goodness of fit and ratio plots of each build against the measurements
+   (information only).
+2. A versus B: combined plot, residuals, metrics and the tolerance test that decides PASS/FAIL.
+3. Components (photons, prompt protons, activation), build against build, with integrated rates per energy band.
+4. The energy ranges where A and B differ (|pull| > 3, more than 3% apart, integrated difference above 5 sigma), with
+   the catalogue lines in each range and zoom plots of the 12 largest; and the ranges where each build differs from the
+   data (both builds / only Geant4 A / only Geant4 B).
+5. Lines of Tables 5 and 6 of the paper: summary, lines where A and B differ (with the same line fitted in the
+   activation component alone), lines where each build differs from the data, and Appendix A with all lines in the
+   layout of the paper.
+6. Appendix B: group patterns of the line differences (median B/A per group with a bootstrap interval).
+
+Each section starts with a short "How to read this" box.
+
+Options:
+
+* `--bin-tol`, `--min-fraction`, `--band-tol`: the tolerance-test thresholds (defaults 0.10, 0.95, 0.05). The thresholds
+  have not yet been approved by the project lead.
+* `--comp-labels` and `--activation-component`: the names of the simulation components and the index of the activation
+  component used for the activation-only line columns (default 2).
+* `--sim-merge N`: merge N simulation bins above 245 keV (default 1).
+* `--fwhm0`, `--fwhm1`: the assumed line width FWHM = fwhm0 + fwhm1 * E in keV (approximate).
+* `--no-pdf`: write only the `.tex` file and the figures.
+
+Notes:
+
+* Lines are measured as in step 4 (net rate in a window of +-1.5 FWHM minus a sideband continuum). A line is shown as an
+  upper limit (net + 2 sigma, written `<`) if it is not detected at 2 sigma. Lines where the other fit methods differ
+  (for example a fit of the measured line shape) will give somewhat different rates.
+* The comparison covers 50 keV and above, using the data bins below 245 keV and the simulation bins above.
+* The labels of the two builds should contain "Geant4 x.y"; the headings "Only Geant4 x.y differs" use it.
