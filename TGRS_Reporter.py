@@ -5,10 +5,12 @@ from email.message import EmailMessage
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_RIGHT
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+from reportlab.platypus.tableofcontents import TableOfContents
 
 """
 This is the TGRS Reporter Class
@@ -25,6 +27,56 @@ a build regression test.
 
 # The one section that decides the overall status
 DECIDING_SECTION = "Sim A vs Sim B (Combined)"
+
+
+class _ReportDocument(SimpleDocTemplate):
+    def afterFlowable(self, flowable):
+        entry = getattr(flowable, "toc_entry", None)
+        if entry is not None:
+            title, key = entry
+            self.notify("TOCEntry", (0, escape(title), self.page, key))
+            self.canv.addOutlineEntry(title, key)
+
+
+def _section_heading(number, title, style):
+    key = f"section-{number}"
+    label = f"{number}. {title}"
+    heading = Paragraph(f'<a name="{key}"/>{escape(label)}', style)
+    heading.toc_entry = (label, key)
+    return heading
+
+
+def _page_number(canvas, doc):
+    canvas.saveState()
+    canvas.setFont("Helvetica", 9)
+    canvas.setFillColor(colors.HexColor("#475569"))
+    canvas.drawRightString(doc.pagesize[0] - doc.rightMargin, 29, str(doc.page))
+    canvas.restoreState()
+
+
+def _report_table(headers, values, column_widths, cell, numeric):
+    rows = [[Paragraph(f"<b>{escape(label)}</b>", cell) for label in headers]]
+    for label, value in values:
+        is_number = isinstance(value, (int, float)) and not isinstance(value, bool)
+        display = format(value, ".6g") if isinstance(value, float) else str(value)
+        rows.append([
+            Paragraph(escape(str(label)), cell),
+            Paragraph(escape(display), numeric if is_number else cell),
+        ])
+
+    table = Table(rows, colWidths=column_widths, repeatRows=1, hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f6f8fa")]),
+        ("LINEABOVE", (0, 0), (-1, 0), 0.7, colors.HexColor("#64748b")),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.HexColor("#94a3b8")),
+        ("LINEBELOW", (0, -1), (-1, -1), 0.7, colors.HexColor("#64748b")),
+    ]))
+    return table
 
 
 def _flatten(data, prefix=""):
@@ -85,30 +137,29 @@ class TGRS_Reporter:
 
         stats_dir  = Path(stats_dir)
         output_path = self.output_dir / output_name
-        doc = SimpleDocTemplate(str(output_path), pagesize=letter)
+        doc = _ReportDocument(str(output_path), pagesize=letter,
+                              leftMargin=48, rightMargin=48, topMargin=48, bottomMargin=54,
+                              title="TGRS MEGAlib Validation Report")
         styles = getSampleStyleSheet()
-        cell = styles["BodyText"]
-        cell.fontSize = 8
-        cell.leading = 10
-        story  = []
+        section_style = ParagraphStyle("ReportSection", parent=styles["Heading2"], keepWithNext=True)
+        cell = ParagraphStyle("TableCell", parent=styles["BodyText"], fontSize=9, leading=12)
+        numeric = ParagraphStyle("NumericCell", parent=cell, alignment=TA_RIGHT)
+        table_width = doc.width - 12  # Default frame padding on both sides.
+        story = []
 
         # Title
         story.append(Paragraph("<b>TGRS MEGAlib Validation Report</b>", styles["Title"]))
-        story.append(Spacer(1, 14))
+        story.append(Paragraph("Contents", styles["Heading2"]))
+        contents = TableOfContents()
+        contents.levelStyles = [ParagraphStyle("ContentsEntry", parent=styles["BodyText"],
+                                               fontSize=10, leading=13, spaceBefore=0, rightIndent=24)]
+        contents.dotsMinLevel = 0
+        story.extend([contents, Spacer(1, 12)])
 
-        # Configuration Table (long values wrap inside their cells)
-        story.append(Paragraph("<b>Configuration Summary</b>", styles["Heading2"]))
+        story.append(_section_heading(1, "Configuration Summary", section_style))
         if self.config:
-            rows = [[Paragraph("<b>Parameter</b>", cell), Paragraph("<b>Value</b>", cell)]]
-            for k, v in _flatten(self.config):
-                rows.append([Paragraph(escape(k), cell), Paragraph(escape(v), cell)])
-            config_table = Table(rows, colWidths=[200, 300], repeatRows=1)
-            config_table.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-            ]))
-            story.append(config_table)
+            story.append(_report_table(("Parameter", "Value"), _flatten(self.config),
+                                       (table_width * 0.39, table_width * 0.61), cell, numeric))
         else:
             story.append(Paragraph("No configuration provided.", styles["BodyText"]))
         story.append(Spacer(1, 12))
@@ -128,11 +179,10 @@ class TGRS_Reporter:
         deciding_pass = None   # None = the deciding section is missing
 
         # One section per comparison
-        for name, stats in all_stats.items():
+        for number, (name, stats) in enumerate(all_stats.items(), start=2):
             decides = (name == DECIDING_SECTION)
             heading = name if decides else f"{name} (information only)"
-            story.append(Paragraph(f"<b>{heading}</b>", styles["Heading2"]))
-            story.append(Spacer(1, 6))
+            story.append(_section_heading(number, heading, section_style))
 
             # Plot (the plots are 2:1)
             plot_path = plot_files.get(name)
@@ -150,19 +200,9 @@ class TGRS_Reporter:
                     story.append(Spacer(1, 8))
 
             # Stats table
-            stat_data = [["Metric", "Value"]]
-            for k, v in stats.items():
-                if k == "overlay_plot":
-                    continue
-                stat_data.append([str(k), str(round(v, 6) if isinstance(v, float) else v)])
-
-            stat_table = Table(stat_data, colWidths=[280, 220])
-            stat_table.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ]))
-            story.append(stat_table)
+            stat_rows = [(key, value) for key, value in stats.items() if key != "overlay_plot"]
+            story.append(_report_table(("Metric", "Value"), stat_rows,
+                                       (table_width * 0.55, table_width * 0.45), cell, numeric))
             story.append(Spacer(1, 6))
 
             # Pass/Fail per section
@@ -182,13 +222,13 @@ class TGRS_Reporter:
         else:
             overall_status = "PASS" if deciding_pass else "FAIL"
             overall_color = "green" if deciding_pass else "red"
+        story.append(_section_heading(len(all_stats) + 2, "Overall Validation Status", section_style))
         story.append(Paragraph(
-            f"<b>Overall Validation Status: <font color='{overall_color}'>{overall_status}</font></b>",
-            styles["Heading2"]
+            f"<font color='{overall_color}'><b>{overall_status}</b></font>. "
+            "Decided by the A versus B comparison only.", styles["BodyText"]
         ))
-        story.append(Paragraph("Decided by the A versus B comparison only.", styles["BodyText"]))
 
-        doc.build(story)
+        doc.multiBuild(story, onFirstPage=_page_number, onLaterPages=_page_number)
         print(f"PDF report generated at: {output_path}")
         return output_path
 
