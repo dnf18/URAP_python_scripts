@@ -178,6 +178,153 @@ def append_pdfs(base, extra, out):
     return True
 
 
+import re as _re
+
+
+def _line_props(r):
+    """Group labels of one line from its identification text and numbers."""
+    trans, _lab, com = split_id(r["id"])
+    m = _re.match(r"^\??\s?(\d+m?)?([A-Z][a-z]?)\(", trans)
+    nuc, elem = ((m.group(1) or "") + m.group(2), m.group(2)) if m else (None, None)
+    flags = {t.strip() for t in com.split(",") if len(t.strip()) == 1}
+    mp = _re.search(r"(?:from|buildup on)\s+(\d+m?[A-Z][a-z]?)", com)
+    parent = mp.group(1) if mp else None
+    e = r["energy"]
+    band = "< 200 keV" if e < 200 else ("200 - 1000 keV" if e < 1000 else "> 1000 keV")
+    share = None
+    if r.get("compB") is not None and r["B"] > 0 and r["A"] > 0:
+        share = 0.5 * (r["compA"] / r["A"] + r["compB"] / r["B"])
+    return dict(elem=elem, nuc=nuc, flags=flags, parent=parent, band=band, share=share)
+
+
+def group_summary(rows, with_comp, min_n=3, nboot=5000, seed=12345):
+    """Median B/A (test/reference) of reliably detected lines, grouped by properties known in advance.
+
+    A line is used only if it is detected in both simulations (net rate > 3 sigma above zero in A and B),
+    because B/A of a noise-level line is meaningless. A group's median has a bootstrap 95% interval over
+    its lines; a group is marked as differing only if it has at least min_n lines and the interval excludes 1.
+    This describes WHERE the builds differ. It does not say why.
+    """
+    use = [r for r in rows if r["A"] > 3 * r["eA"] and r["B"] > 3 * r["eB"]]
+    for r in use:
+        r["_p"] = _line_props(r)
+    groups = {}
+
+    def add(name, sel):
+        sel = [r for r in use if sel(r)]
+        if sel:
+            groups[name] = sel
+
+    add("All detected lines", lambda r: True)
+    add("Origin: activation (a)", lambda r: "a" in r["_p"]["flags"])
+    add("Origin: prompt/spallation (s)", lambda r: "s" in r["_p"]["flags"] and "a" not in r["_p"]["flags"])
+    add("Origin: radioactive background (r)", lambda r: "r" in r["_p"]["flags"])
+    for b in ("< 200 keV", "200 - 1000 keV", "> 1000 keV"):
+        add(f"Energy: {b}", lambda r, b=b: r["_p"]["band"] == b)
+    if with_comp:
+        add("Mostly activation (>= 80% of the line)", lambda r: r["_p"]["share"] is not None and r["_p"]["share"] >= 0.8)
+        add("Mostly prompt (<= 30% activation)", lambda r: r["_p"]["share"] is not None and r["_p"]["share"] <= 0.3)
+    for el in sorted({r["_p"]["elem"] for r in use if r["_p"]["elem"]}):
+        add(f"Element of the transition: {el}", lambda r, el=el: r["_p"]["elem"] == el)
+    for par in sorted({r["_p"]["parent"] for r in use if r["_p"]["parent"]}):
+        add(f"Decay parent: {par}", lambda r, par=par: r["_p"]["parent"] == par)
+
+    rng = np.random.default_rng(seed)
+    out = []
+    for name, sel in groups.items():
+        lr = np.log(np.array([r["B"] / r["A"] for r in sel]))
+        med = float(np.exp(np.median(lr)))
+        if len(sel) >= min_n:
+            bs = np.exp(np.median(rng.choice(lr, size=(nboot, len(lr))), axis=1))
+            lo, hi = (float(x) for x in np.percentile(bs, [2.5, 97.5]))
+            differs = bool(lo > 1 or hi < 1)
+        else:
+            lo = hi = float("nan"); differs = False
+        out.append(dict(group=name, n=len(sel), median_B_over_A=med, ci_low=lo, ci_high=hi,
+                        n_B_higher=int(np.sum(lr > 0)), differs=differs,
+                        lines=", ".join(f"{r['energy']:.1f}" for r in sel)))
+    return out, use
+
+
+def write_groups_pdf(path, summ, use, ref_label, test_label, min_n, dpi):
+    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+    from xml.sax.saxutils import escape
+    import tempfile
+    ss = getSampleStyleSheet()
+    body = ParagraphStyle("b", parent=ss["BodyText"], fontSize=8.5, leading=10.5, spaceAfter=3)
+    cell = ParagraphStyle("c", parent=ss["BodyText"], fontSize=7, leading=8.2)
+    doc = SimpleDocTemplate(path, pagesize=landscape(letter), leftMargin=30, rightMargin=30, topMargin=30, bottomMargin=30)
+    story = [Paragraph("<b>Where the two simulations differ: lines grouped by origin, energy and parent isotope</b>", ss["Heading2"]),
+             Paragraph("<b>What this shows.</b> The line comparison above lists each line separately. Here the lines are "
+                       "grouped by properties known in advance (the origin flag of the paper, the energy, whether the line "
+                       "comes mostly from the activation component, the element of the transition and the decay parent) to see "
+                       f"whether the differences between A ({escape(ref_label)}) and B ({escape(test_label)}) follow a pattern. "
+                       "For every group the table gives the median of B/A over its lines and a 95% bootstrap interval. "
+                       f"Only lines detected in both simulations (net rate more than 3 sigma above zero) are used. A group is marked "
+                       f"<b>differs</b> if it has at least {min_n} lines and the interval does not contain 1.", body),
+             Paragraph("<b>How to read it.</b> A value above 1 means the test build produces stronger lines. This is a description "
+                       "of where the builds differ, not an explanation of why. The groups overlap (a line belongs to several "
+                       "groups) and the samples are small, so a group with few lines can differ by chance. The cause has to be "
+                       "tested separately, for example by comparing the yield of the parent isotopes in the activation files.", body),
+             Spacer(1, 4)]
+    hdr = ParagraphStyle("h", parent=cell, fontName="Helvetica-Bold")
+    data = [[Paragraph(h, hdr) for h in ("Group", "Lines", "Median B/A", "95% interval", "B higher in", "Result", "Line energies (keV)")]]
+    style = [("GRID", (0, 0), (-1, -1), 0.25, colors.grey), ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+             ("VALIGN", (0, 0), (-1, -1), "TOP")]
+    for i, g in enumerate(summ, start=1):
+        ci = "-" if not np.isfinite(g["ci_low"]) else f"{g['ci_low']:.2f} - {g['ci_high']:.2f}"
+        res = "differs" if g["differs"] else (f"n < {min_n}" if g["n"] < min_n else "consistent with 1")
+        data.append([Paragraph(escape(g["group"]), cell), Paragraph(str(g["n"]), cell), Paragraph(f"{g['median_B_over_A']:.2f}", cell),
+                     Paragraph(ci, cell), Paragraph(f"{g['n_B_higher']} of {g['n']}", cell),
+                     Paragraph(f"<b>{res}</b>" if g["differs"] else res, cell), Paragraph(escape(g["lines"][:140]), cell)])
+        if g["differs"]:
+            style.append(("BACKGROUND", (0, i), (-1, i), colors.Color(1, .93, .8)))
+    t = Table(data, colWidths=[165, 38, 55, 70, 55, 85, 280], repeatRows=1)
+    t.setStyle(TableStyle(style))
+    story.append(t)
+    # strip plot of B/A per line, one row per origin/energy group
+    try:
+        import matplotlib.pyplot as plt
+        sel = [g for g in summ if g["group"].startswith(("Origin", "Energy", "Mostly", "All"))]
+        fig, ax = plt.subplots(figsize=(9, 0.55 * len(sel) + 1.2))
+        byname = {}
+        for r in use:
+            pr = r["_p"]
+            for g in sel:
+                n = g["group"]
+                ok = (n == "All detected lines" or
+                      (n == "Origin: activation (a)" and "a" in pr["flags"]) or
+                      (n == "Origin: prompt/spallation (s)" and "s" in pr["flags"] and "a" not in pr["flags"]) or
+                      (n == "Origin: radioactive background (r)" and "r" in pr["flags"]) or
+                      (n == f"Energy: {pr['band']}") or
+                      (n.startswith("Mostly activation") and pr["share"] is not None and pr["share"] >= 0.8) or
+                      (n.startswith("Mostly prompt") and pr["share"] is not None and pr["share"] <= 0.3))
+                if ok:
+                    byname.setdefault(n, []).append(r["B"] / r["A"])
+        for k, g in enumerate(sel):
+            v = byname.get(g["group"], [])
+            ax.plot(v, [k] * len(v), "o", ms=4, alpha=.6, color="C0")
+            ax.plot([g["median_B_over_A"]], [k], "|", ms=16, color="k", mew=2)
+            if np.isfinite(g["ci_low"]):
+                ax.plot([g["ci_low"], g["ci_high"]], [k, k], "-", color="k", lw=1.2)
+        ax.axvline(1, color="gray", ls="--"); ax.set_xscale("log")
+        ax.set_yticks(range(len(sel))); ax.set_yticklabels([g["group"] for g in sel], fontsize=8); ax.invert_yaxis()
+        ax.set_xlabel(f"B / A = {test_label} / {ref_label} (net line rate); dots: lines, bar: median with 95% interval")
+        fig.tight_layout()
+        tmp = path[:-4] + "_strip.png"
+        fig.savefig(tmp, dpi=dpi); plt.close(fig)
+        from PIL import Image as PI
+        w0, h0 = PI.open(tmp).size
+        sc = min(560 / w0, 250 / h0)
+        story += [Spacer(1, 8), Image(tmp, w0 * sc, h0 * sc)]
+    except Exception as e:
+        print(f"[note] group plot not built: {e}")
+    doc.build(story)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("ref"); ap.add_argument("test")
@@ -360,6 +507,22 @@ def main():
         d.build(st); extra.append(pp)
     except Exception as e:
         print(f"[note] plot pages for the report not built: {e}")
+    # grouped summary: where do the builds differ?
+    try:
+        summ, used = group_summary(rows_all, a.component is not None)
+        if summ:
+            with open(os.path.join(a.out, "group_summary.csv"), "w", newline="") as f:
+                w = csv.DictWriter(f, list(summ[0].keys())); w.writeheader(); w.writerows(summ)
+            gp = os.path.join(a.out, "line_groups.pdf")
+            write_groups_pdf(gp, summ, used, a.ref_label, a.test_label, 3, a.dpi)
+            extra.append(gp)
+            print("\nGroups whose median B/A differs from 1 (>= 3 lines, 95% interval excludes 1):")
+            for g in summ:
+                if g["differs"]:
+                    print(f"  {g['group']}: n={g['n']}, median B/A={g['median_B_over_A']:.2f} "
+                          f"({g['ci_low']:.2f}-{g['ci_high']:.2f})")
+    except Exception as e:
+        print(f"[note] group summary not built: {e}")
     if a.append_to:
         out = a.append_to[:-4] + "_with_lines.pdf" if a.append_to.endswith(".pdf") else a.append_to + "_with_lines.pdf"
         if append_pdfs(a.append_to, extra, out):
