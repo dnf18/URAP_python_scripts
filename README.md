@@ -2,7 +2,7 @@
 
 This branch holds only what is needed to run the TGRS validation pipeline: the scripts and inputs in
 `tgrs_pipeline/` plus the three comparison/report modules it imports (`Comparator.py`,
-`TGRS_Comparator.py`, `TGRS_Reporter.py`). Do not merge this branch into `main`: it deletes files that
+`TGRS_Comparator.py`, `TGRS_Reporter.py`). **Do not merge this branch into `main`:** it deletes files that
 `main` still needs.
 
 ## To Install Libraries from requirements.txt
@@ -84,7 +84,7 @@ observation time of the decay component, and stop with an error code when someth
 ## 2. Run the TGRS program
 
 ```
-cd <run_folder>
+cd <folder of the runs>/old_full      # then repeat for dc6_full
 MEGALIB_INSTALL=<install_dir> TGRS_BIN=<path to TGRS binary> bash <path to repo>/tgrs_pipeline/scripts/run_tgrs.sh
 ```
 
@@ -97,10 +97,15 @@ by `patch_tgrs.py`.
 
 ## 3. Validation report
 
+Use the run names you gave `submit_chain.sh` in step 1; the examples use `old_full` (A) and `dc6_full` (B).
+Replace the placeholders with the folders that contain your two run folders.
+
 ```
 module load anaconda3
 export PYTHONPATH=<path to repo>:$PYTHONPATH
-python3 tgrs_pipeline/scripts/TGRS_ROOT_Report.py <A>/TGRS_output.root <B>/TGRS_output.root \
+RUN_A=<folder of the runs>/old_full
+RUN_B=<folder of the runs>/dc6_full
+python3 tgrs_pipeline/scripts/TGRS_ROOT_Report.py $RUN_A/TGRS_output.root $RUN_B/TGRS_output.root \
   --tgrs tgrs_pipeline/inputs/dc6/TGRS.dat --comparator-dir <path to repo> \
   --ref-label "MEGAlib 10.2 (Geant4 10.2.3)" --test-label "MEGAlib dc6 (Geant4 11.4.3)" \
   --out analysis/results --reports analysis/reports
@@ -115,9 +120,11 @@ by the project lead.**
 
 ## 4. Line-by-line comparison
 
+This uses `RUN_A` and `RUN_B` from step 3.
+
 ```
 mkdir -p analysis/lines
-python3 tgrs_pipeline/scripts/TGRS_Line_Compare.py <A>/TGRS_output.root <B>/TGRS_output.root \
+python3 tgrs_pipeline/scripts/TGRS_Line_Compare.py $RUN_A/TGRS_output.root $RUN_B/TGRS_output.root \
   --lines tgrs_pipeline/scripts/tgrs_lines.csv --out analysis/lines --min-rate 0.02 \
   --ref-label "10.2" --test-label "dc6" --component 2 \
   --append-to analysis/reports/TGRS_Validation_Report.pdf
