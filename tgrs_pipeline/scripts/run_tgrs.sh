@@ -2,7 +2,7 @@
 # Run the patched TGRS program on one build's simulation results.
 # Run it from inside the run folder (it holds the *.p1.sim.gz files, TGRS.dat, TGRS.geo.setup):
 #   cd tgrs/runs/old_smoke
-#   MEGALIB_INSTALL=/global/home/groups/fc_cosi/MEGAlib TGRS_BIN=/path/to/tgrs_bin_old/TGRS bash ../../scripts/run_tgrs.sh
+#   MEGALIB_INSTALL=/global/home/groups/fc_cosi/MEGAlib_geant4.11.4 TGRS_BIN=<path to>/tgrs_bin_dc6/TGRS bash ../../scripts/run_tgrs.sh
 # For the small smoke files this takes minutes on one core and can run on a login node. For the large
 # runs submit it instead:  sbatch --export=ALL ../../scripts/run_tgrs.sh
 # Output: TGRS_output.root (histograms TGRS, Sim, Difference, Component_0..2).

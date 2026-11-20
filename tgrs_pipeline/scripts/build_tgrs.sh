@@ -2,7 +2,7 @@
 # Build the patched MEGAlib TGRS program against ONE install.
 #   bash build_tgrs.sh <megalib_install_dir> <that install's stock TGRS.cxx> <output_dir>
 # e.g.
-#   bash build_tgrs.sh /global/home/groups/fc_cosi/MEGAlib       inputs_old/TGRS.cxx tgrs_bin_old
+#   bash build_tgrs.sh /global/home/groups/fc_cosi/MEGAlib_geant4.11.4  inputs_dc6/TGRS.cxx tgrs_bin_dc6
 #   bash build_tgrs.sh /global/home/groups/fc_cosi/MEGAlib_geant4.11.4 inputs_dc6/TGRS.cxx tgrs_bin_dc6
 # Use each install's own TGRS.cxx and build it with that install: the two versions differ.
 # Run it on a login node (one small compile), in a shell where no other MEGAlib is sourced.
